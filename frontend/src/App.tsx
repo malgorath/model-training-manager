@@ -7,6 +7,7 @@ import ProjectsPage from './pages/ProjectsPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
 import UserGuidePage from './pages/UserGuidePage';
 import SettingsPage from './pages/SettingsPage';
+import ModelsPage from './pages/ModelsPage';
 
 /**
  * Main application component with routing.
@@ -21,6 +22,7 @@ function App() {
         <Route path="training" element={<TrainingJobsPage />} />
         <Route path="projects" element={<ProjectsPage />} />
         <Route path="projects/:id" element={<ProjectDetailPage />} />
+        <Route path="models" element={<ModelsPage />} />
         <Route path="guide" element={<UserGuidePage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>

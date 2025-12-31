@@ -71,8 +71,9 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     base_model: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    model_type: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     training_type: Mapped[str] = mapped_column(String(20), nullable=False, default="qlora")
-    max_rows: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_directory: Mapped[str] = mapped_column(String(512), nullable=False)
     
     status: Mapped[str] = mapped_column(
@@ -164,7 +165,7 @@ class ProjectTraitDataset(Base):
     Junction table linking project traits to datasets with percentages.
     
     Defines which datasets are used for each trait and what percentage
-    of the overall training data each dataset represents.
+    of each dataset file to use (0-100%).
     
     Attributes:
         id: Unique identifier for the allocation.
@@ -172,7 +173,8 @@ class ProjectTraitDataset(Base):
         trait: Related project trait object.
         dataset_id: Foreign key to the dataset.
         dataset: Related dataset object.
-        percentage: Percentage of training data (0-100) this dataset represents.
+        percentage: Percentage of the dataset file to use (0-100). 
+                    For example, 50% means use half of the dataset's rows.
     """
     
     __tablename__ = "project_trait_datasets"

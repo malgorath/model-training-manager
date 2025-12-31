@@ -40,7 +40,6 @@ class DatasetService:
             db: SQLAlchemy database session.
         """
         self.db = db
-        self.upload_path = settings.get_upload_path()
     
     async def create_dataset(
         self,
@@ -91,9 +90,16 @@ class DatasetService:
         except Exception as e:
             raise ValueError(f"Failed to parse file: {str(e)}")
         
+        # Determine author (default to "user" for user uploads)
+        author = "user"
+        dataset_name = dataset_data.name
+        
+        # Create directory structure: ./data/{author}/{datasetname}
+        dataset_dir = settings.get_dataset_path(author, dataset_name)
+        
         # Generate unique filename and save
         unique_filename = f"{uuid.uuid4().hex}{file_ext}"
-        file_path = self.upload_path / unique_filename
+        file_path = dataset_dir / unique_filename
         file_path.write_bytes(content)
         
         # Create database record
@@ -265,4 +271,132 @@ class DatasetService:
         self.db.commit()
         
         return True
+    
+    def scan_datasets(self) -> dict[str, Any]:
+        """
+        Scan the data directory structure and auto-add valid datasets to the database.
+        
+        Scans ./data/{author}/{datasetname}/ directories for CSV and JSON files,
+        validates them, and adds them to the database if they don't already exist.
+        
+        Returns:
+            Dictionary with:
+                - scanned: Number of files scanned
+                - added: Number of datasets added
+                - skipped: Number of files skipped (already in DB or invalid)
+                - added_datasets: List of added dataset names
+                - skipped_paths: List of skipped file paths
+        """
+        base_dir = settings.get_upload_path()
+        if not base_dir.exists():
+            return {
+                "scanned": 0,
+                "added": 0,
+                "skipped": 0,
+                "added_datasets": [],
+                "skipped_paths": [],
+            }
+        
+        scanned = 0
+        added = 0
+        skipped = 0
+        added_datasets = []
+        skipped_paths = []
+        
+        # Get all existing file paths from database
+        existing_paths = {
+            dataset.file_path
+            for dataset in self.db.query(Dataset).all()
+        }
+        
+        # Scan directory structure: ./data/{author}/{datasetname}/
+        for author_dir in base_dir.iterdir():
+            if not author_dir.is_dir():
+                continue
+            
+            author = author_dir.name
+            
+            # Skip special directories
+            if author in ("models", "archives"):
+                continue
+            
+            # Scan dataset directories
+            for dataset_dir in author_dir.iterdir():
+                if not dataset_dir.is_dir():
+                    continue
+                
+                dataset_name = dataset_dir.name
+                
+                # Find dataset files in this directory
+                for file_path in dataset_dir.iterdir():
+                    if not file_path.is_file():
+                        continue
+                    
+                    file_ext = file_path.suffix.lower()
+                    if file_ext not in settings.allowed_extensions:
+                        continue
+                    
+                    scanned += 1
+                    file_path_str = str(file_path)
+                    
+                    # Skip if already in database
+                    if file_path_str in existing_paths:
+                        skipped += 1
+                        skipped_paths.append(file_path_str)
+                        continue
+                    
+                    # Try to parse and add the dataset
+                    try:
+                        file_size = file_path.stat().st_size
+                        
+                        # Read and parse file
+                        content = file_path.read_bytes()
+                        
+                        if file_ext == ".csv":
+                            row_count, column_count, columns = self._parse_csv(content)
+                            file_type = "csv"
+                        else:  # .json
+                            row_count, column_count, columns = self._parse_json(content)
+                            file_type = "json"
+                        
+                        # Create dataset name from directory name or filename
+                        display_name = dataset_name
+                        if display_name == "unknown" or not display_name:
+                            display_name = file_path.stem
+                        
+                        # Create database record
+                        dataset = Dataset(
+                            name=display_name,
+                            description=f"Auto-discovered dataset from {author}/{dataset_name}",
+                            filename=file_path.name,
+                            file_path=file_path_str,
+                            file_type=file_type,
+                            file_size=file_size,
+                            row_count=row_count,
+                            column_count=column_count,
+                            columns=json.dumps(columns) if columns else None,
+                        )
+                        
+                        self.db.add(dataset)
+                        self.db.commit()
+                        self.db.refresh(dataset)
+                        
+                        added += 1
+                        added_datasets.append(dataset.name)
+                        existing_paths.add(file_path_str)  # Track newly added
+                        
+                    except Exception as e:
+                        # Skip invalid files
+                        skipped += 1
+                        skipped_paths.append(file_path_str)
+                        self.db.rollback()
+                        continue
+        
+        return {
+            "scanned": scanned,
+            "added": added,
+            "skipped": skipped,
+            "added_datasets": added_datasets,
+            "skipped_paths": skipped_paths,
+        }
 

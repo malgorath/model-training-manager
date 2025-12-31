@@ -27,10 +27,9 @@ class TestDatasetService:
         with patch("app.services.dataset_service.settings") as mock_settings:
             mock_settings.allowed_extensions = {".csv", ".json"}
             mock_settings.max_upload_size = 100 * 1024 * 1024
-            mock_settings.get_upload_path.return_value = temp_upload_dir
+            mock_settings.get_dataset_path.return_value = temp_upload_dir / "user" / "test_dataset"
             
             service = DatasetService(test_db_session)
-            service.upload_path = temp_upload_dir
             return service
     
     @pytest.fixture
@@ -245,8 +244,10 @@ class TestDatasetService:
         temp_upload_dir: Path,
     ):
         """Test deleting a dataset."""
-        # Create a file
-        file_path = temp_upload_dir / "test_delete.csv"
+        # Create a file in the new structure: data/user/datasetname/
+        dataset_dir = temp_upload_dir / "user" / "test_delete"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        file_path = dataset_dir / "test_delete.csv"
         file_path.write_text("input,output\na,b\n")
         
         dataset = Dataset(
@@ -271,4 +272,142 @@ class TestDatasetService:
         """Test deleting a non-existent dataset."""
         result = service.delete_dataset(99999)
         assert result is False
+    
+    def test_scan_datasets_finds_new_files(
+        self,
+        service: DatasetService,
+        test_db_session: Session,
+        temp_upload_dir: Path,
+    ):
+        """Test scanning directories and auto-adding valid datasets."""
+        # Create test dataset files in the expected structure
+        author_dir = temp_upload_dir / "user" / "scanned_dataset"
+        author_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create a valid CSV file
+        csv_file = author_dir / "test_scanned.csv"
+        csv_file.write_text("input,output\nHello,World\nTest,Data\n")
+        
+        # Create a valid JSON file
+        json_file = author_dir / "test_scanned.json"
+        json_file.write_text('[{"input": "Hello", "output": "World"}]')
+        
+        # Mock settings to return our temp directory
+        with patch("app.services.dataset_service.settings") as mock_settings:
+            mock_settings.get_upload_path.return_value = temp_upload_dir
+            mock_settings.allowed_extensions = {".csv", ".json"}
+            
+            # Scan for datasets
+            result = service.scan_datasets()
+        
+        # Should find and add 2 datasets
+        assert result["scanned"] == 2
+        assert result["added"] == 2
+        assert result["skipped"] == 0
+        assert len(result["added_datasets"]) == 2
+        
+        # Verify datasets were added to database
+        datasets = test_db_session.query(Dataset).all()
+        assert len(datasets) == 2
+        
+        # Verify file paths are correct
+        file_paths = {d.file_path for d in datasets}
+        assert str(csv_file) in file_paths
+        assert str(json_file) in file_paths
+    
+    def test_scan_datasets_skips_existing(
+        self,
+        service: DatasetService,
+        test_db_session: Session,
+        temp_upload_dir: Path,
+    ):
+        """Test that scanning skips datasets already in database."""
+        # Create a dataset file
+        author_dir = temp_upload_dir / "user" / "existing_dataset"
+        author_dir.mkdir(parents=True, exist_ok=True)
+        csv_file = author_dir / "existing.csv"
+        csv_file.write_text("input,output\nHello,World\n")
+        
+        # Add it to database first
+        existing_dataset = Dataset(
+            name="Existing Dataset",
+            filename="existing.csv",
+            file_path=str(csv_file),
+            file_type="csv",
+            file_size=100,
+            row_count=1,
+            column_count=2,
+        )
+        test_db_session.add(existing_dataset)
+        test_db_session.commit()
+        
+        # Scan should skip it
+        with patch("app.services.dataset_service.settings") as mock_settings:
+            mock_settings.get_upload_path.return_value = temp_upload_dir
+            mock_settings.allowed_extensions = {".csv", ".json"}
+            
+            result = service.scan_datasets()
+        
+        assert result["scanned"] == 1
+        assert result["added"] == 0
+        assert result["skipped"] == 1
+        assert len(result["skipped_paths"]) == 1
+        assert str(csv_file) in result["skipped_paths"]
+    
+    def test_scan_datasets_handles_invalid_files(
+        self,
+        service: DatasetService,
+        temp_upload_dir: Path,
+    ):
+        """Test that scanning handles invalid files gracefully."""
+        # Create invalid files
+        author_dir = temp_upload_dir / "user" / "invalid_dataset"
+        author_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Invalid JSON (not an array)
+        invalid_json = author_dir / "invalid.json"
+        invalid_json.write_text('{"not": "an array"}')
+        
+        # Empty CSV
+        empty_csv = author_dir / "empty.csv"
+        empty_csv.write_text("")
+        
+        with patch("app.services.dataset_service.settings") as mock_settings:
+            mock_settings.get_upload_path.return_value = temp_upload_dir
+            mock_settings.allowed_extensions = {".csv", ".json"}
+            
+            result = service.scan_datasets()
+        
+        # Should skip invalid files
+        assert result["scanned"] >= 2
+        assert result["added"] == 0
+        assert result["skipped"] >= 2
+    
+    def test_scan_datasets_handles_multiple_authors(
+        self,
+        service: DatasetService,
+        test_db_session: Session,
+        temp_upload_dir: Path,
+    ):
+        """Test scanning datasets from multiple authors."""
+        # Create datasets for different authors
+        user_dir = temp_upload_dir / "user" / "user_dataset"
+        user_dir.mkdir(parents=True, exist_ok=True)
+        user_file = user_dir / "user_data.csv"
+        user_file.write_text("input,output\nHello,World\n")
+        
+        author_dir = temp_upload_dir / "test_author" / "author_dataset"
+        author_dir.mkdir(parents=True, exist_ok=True)
+        author_file = author_dir / "author_data.csv"
+        author_file.write_text("input,output\nTest,Data\n")
+        
+        with patch("app.services.dataset_service.settings") as mock_settings:
+            mock_settings.get_upload_path.return_value = temp_upload_dir
+            mock_settings.allowed_extensions = {".csv", ".json"}
+            
+            result = service.scan_datasets()
+        
+        assert result["added"] == 2
+        datasets = test_db_session.query(Dataset).all()
+        assert len(datasets) == 2
 

@@ -9,8 +9,8 @@ import {
   Power,
 } from 'lucide-react';
 import { clsx } from 'clsx';
-import { workerApi, configApi } from '../services/api';
-import type { WorkerStatus } from '../types';
+import { workerApi, configApi, trainingJobApi } from '../services/api';
+import type { WorkerStatus, TrainingJob } from '../types';
 
 /**
  * Get status badge color based on worker status.
@@ -199,35 +199,7 @@ export default function WorkerDashboard() {
         {poolStatus?.workers && poolStatus.workers.length > 0 ? (
           <div className="space-y-3">
             {poolStatus.workers.map((worker) => (
-              <div
-                key={worker.id}
-                className="flex items-center justify-between rounded-lg border border-surface-800 bg-surface-800/30 px-4 py-3"
-              >
-                <div className="flex items-center gap-3">
-                  <Circle
-                    className={clsx(
-                      'h-3 w-3 fill-current',
-                      getStatusColor(worker.status)
-                    )}
-                  />
-                  <div>
-                    <p className="font-medium text-white">{worker.id}</p>
-                    <p className="text-sm text-surface-400 capitalize">
-                      {worker.status}
-                      {worker.current_job_id && (
-                        <span className="ml-2">
-                          → Job #{worker.current_job_id}
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-sm text-surface-300">
-                    {worker.jobs_completed} jobs completed
-                  </p>
-                </div>
-              </div>
+              <WorkerCard key={worker.id} worker={worker} />
             ))}
           </div>
         ) : (
@@ -240,6 +212,127 @@ export default function WorkerDashboard() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Worker card component showing worker details and current job progress.
+ */
+function WorkerCard({ worker }: { worker: { id: string; status: WorkerStatus; current_job_id: number | null; jobs_completed: number } }) {
+  const { data: job, isLoading } = useQuery({
+    queryKey: ['jobs', worker.current_job_id],
+    queryFn: () => trainingJobApi.get(worker.current_job_id!),
+    enabled: !!worker.current_job_id,
+    refetchInterval: 3000, // Refresh every 3 seconds for progress updates
+  });
+
+  const formatDuration = (startedAt: string | null, completedAt: string | null): string => {
+    if (!startedAt) return '-';
+    const start = new Date(startedAt).getTime();
+    const end = completedAt ? new Date(completedAt).getTime() : Date.now();
+    const duration = Math.floor((end - start) / 1000);
+    
+    if (duration < 60) return `${duration}s`;
+    if (duration < 3600) return `${Math.floor(duration / 60)}m ${duration % 60}s`;
+    return `${Math.floor(duration / 3600)}h ${Math.floor((duration % 3600) / 60)}m`;
+  };
+
+  return (
+    <div className="rounded-lg border border-surface-800 bg-surface-800/30 overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-3">
+          <Circle
+            className={clsx(
+              'h-3 w-3 fill-current',
+              getStatusColor(worker.status)
+            )}
+          />
+          <div>
+            <p className="font-medium text-white">{worker.id}</p>
+            <p className="text-sm text-surface-400 capitalize">
+              {worker.status}
+              {worker.current_job_id && (
+                <span className="ml-2">
+                  → Job #{worker.current_job_id}
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+        <div className="text-right">
+          <p className="text-sm text-surface-300">
+            {worker.jobs_completed} jobs completed
+          </p>
+        </div>
+      </div>
+
+      {/* Current Job Details */}
+      {worker.current_job_id && (
+        <div className="border-t border-surface-800 bg-surface-900/50 px-4 py-3">
+          {isLoading ? (
+            <div className="flex items-center gap-2 text-sm text-surface-400">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading job details...
+            </div>
+          ) : job ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="font-medium text-white">{job.name}</p>
+                <span className={clsx(
+                  'rounded px-2 py-0.5 text-xs font-semibold capitalize',
+                  job.status === 'running' ? 'bg-primary-500/20 text-primary-400' :
+                  job.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
+                  job.status === 'failed' ? 'bg-red-500/20 text-red-400' :
+                  'bg-surface-700 text-surface-400'
+                )}>
+                  {job.status}
+                </span>
+              </div>
+              
+              {(job.status === 'running' || job.status === 'completed') && (
+                <>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-surface-400">
+                      Epoch {job.current_epoch} / {job.epochs}
+                    </span>
+                    <span className="text-surface-300">
+                      {job.progress.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-surface-800">
+                    <div
+                      className={clsx(
+                        'h-full rounded-full transition-all duration-500',
+                        job.status === 'completed'
+                          ? 'bg-emerald-500'
+                          : 'bg-gradient-to-r from-primary-500 to-accent-500'
+                      )}
+                      style={{ width: `${job.progress}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-surface-500">
+                    <span>
+                      {job.current_loss !== null && `Loss: ${job.current_loss.toFixed(4)}`}
+                    </span>
+                    <span>
+                      Duration: {formatDuration(job.started_at, job.completed_at)}
+                    </span>
+                  </div>
+                </>
+              )}
+
+              {job.status === 'failed' && job.error_message && (
+                <div className="mt-2 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-400">
+                  {job.error_message}
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-surface-500">Job not found</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

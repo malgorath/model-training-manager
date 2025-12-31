@@ -40,12 +40,13 @@ const getStatusBadge = (status: TrainingStatus) => {
 
 interface JobMonitorProps {
   onSelectJob?: (job: TrainingJob) => void;
+  showFilters?: boolean;
 }
 
 /**
  * Training job monitor component.
  */
-export default function JobMonitor({ onSelectJob }: JobMonitorProps) {
+export default function JobMonitor({ onSelectJob, showFilters = true }: JobMonitorProps) {
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState<TrainingStatus | undefined>();
@@ -55,6 +56,8 @@ export default function JobMonitor({ onSelectJob }: JobMonitorProps) {
     queryKey: ['jobs', page, statusFilter],
     queryFn: () => trainingJobApi.list(page, pageSize, statusFilter),
     refetchInterval: 5000,
+    // Ensure we always fetch jobs, even if statusFilter is undefined
+    enabled: true,
   });
 
   const startMutation = useMutation({
@@ -64,7 +67,9 @@ export default function JobMonitor({ onSelectJob }: JobMonitorProps) {
 
   const cancelMutation = useMutation({
     mutationFn: trainingJobApi.cancel,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['jobs'] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+    },
   });
 
   const formatDuration = (startedAt: string | null, completedAt: string | null): string => {
@@ -89,23 +94,25 @@ export default function JobMonitor({ onSelectJob }: JobMonitorProps) {
   return (
     <div>
       {/* Filters */}
-      <div className="mb-4 flex items-center gap-2">
-        <span className="text-sm text-surface-400">Filter:</span>
-        {(['pending', 'running', 'completed', 'failed'] as TrainingStatus[]).map((status) => (
-          <button
-            key={status}
-            onClick={() => setStatusFilter(statusFilter === status ? undefined : status)}
-            className={clsx(
-              'rounded-lg px-3 py-1.5 text-sm capitalize transition-colors',
-              statusFilter === status
-                ? 'bg-primary-500/20 text-primary-400'
-                : 'bg-surface-800 text-surface-400 hover:bg-surface-700'
-            )}
-          >
-            {status}
-          </button>
-        ))}
-      </div>
+      {showFilters && (
+        <div className="mb-4 flex items-center gap-2">
+          <span className="text-sm text-surface-400">Filter:</span>
+          {(['pending', 'running', 'completed', 'failed'] as TrainingStatus[]).map((status) => (
+            <button
+              key={status}
+              onClick={() => setStatusFilter(statusFilter === status ? undefined : status)}
+              className={clsx(
+                'rounded-lg px-3 py-1.5 text-sm capitalize transition-colors',
+                statusFilter === status
+                  ? 'bg-primary-500/20 text-primary-400'
+                  : 'bg-surface-800 text-surface-400 hover:bg-surface-700'
+              )}
+            >
+              {status}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Job List */}
       {!data?.items.length ? (
@@ -145,6 +152,11 @@ export default function JobMonitor({ onSelectJob }: JobMonitorProps) {
                         <h4 className="font-medium text-white">{job.name}</h4>
                         <p className="text-sm text-surface-400">
                           {job.training_type.toUpperCase()} • {job.epochs} epochs
+                          {job.worker_id && (
+                            <span className="ml-2 text-primary-400">
+                              • Worker: {job.worker_id}
+                            </span>
+                          )}
                         </p>
                       </div>
                     </div>

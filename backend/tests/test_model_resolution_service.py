@@ -185,3 +185,52 @@ class TestModelResolutionService:
         
         assert resolved_path == str(override_path)
         assert "override" in str(resolved_path)
+    
+    def test_map_ollama_model_name(self, service):
+        """Test that Ollama model names are mapped to HuggingFace names."""
+        # Test known mappings
+        assert service._map_model_name("llama3.2:3b") == "meta-llama/Llama-3.2-3B-Instruct"
+        assert service._map_model_name("llama3.2:1b") == "meta-llama/Llama-3.2-1B-Instruct"
+        assert service._map_model_name("mistral:7b") == "mistralai/Mistral-7B-Instruct-v0.2"
+        
+        # Test that HuggingFace names pass through unchanged
+        hf_name = "meta-llama/Llama-3.2-3B-Instruct"
+        assert service._map_model_name(hf_name) == hf_name
+        
+        # Test unknown names pass through
+        unknown = "custom/model-name"
+        assert service._map_model_name(unknown) == unknown
+    
+    def test_resolve_ollama_model_name(self, service, temp_cache_dir):
+        """Test resolving a model using Ollama name format."""
+        # Create HuggingFace cache structure for the mapped model
+        hf_model_name = "meta-llama/Llama-3.2-3B-Instruct"
+        ollama_name = "llama3.2:3b"
+        
+        cache_path = temp_cache_dir / ".cache" / "huggingface" / "hub"
+        model_cache_dir = cache_path / f"models--{hf_model_name.replace('/', '--')}"
+        snapshots_dir = model_cache_dir / "snapshots" / "abc123"
+        snapshots_dir.mkdir(parents=True)
+        (snapshots_dir / "config.json").write_text('{"model_type": "llama"}')
+        (snapshots_dir / "tokenizer.json").write_text("{}")
+        
+        # Should resolve using Ollama name
+        resolved_path = service.resolve_model_path(ollama_name)
+        
+        assert resolved_path == str(snapshots_dir)
+        assert Path(resolved_path).exists()
+    
+    def test_is_model_available_with_ollama_name(self, service, temp_cache_dir):
+        """Test checking model availability using Ollama name format."""
+        hf_model_name = "meta-llama/Llama-3.2-3B-Instruct"
+        ollama_name = "llama3.2:3b"
+        
+        cache_path = temp_cache_dir / ".cache" / "huggingface" / "hub"
+        model_cache_dir = cache_path / f"models--{hf_model_name.replace('/', '--')}"
+        snapshots_dir = model_cache_dir / "snapshots" / "abc123"
+        snapshots_dir.mkdir(parents=True)
+        (snapshots_dir / "config.json").write_text('{"model_type": "llama"}')
+        (snapshots_dir / "tokenizer.json").write_text("{}")
+        
+        # Should find model using Ollama name
+        assert service.is_model_available(ollama_name) is True

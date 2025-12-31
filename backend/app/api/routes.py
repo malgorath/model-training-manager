@@ -6,7 +6,7 @@ This module defines all API endpoints for the application.
 
 from fastapi import APIRouter
 
-from app.api.endpoints import datasets, training_jobs, config, workers, huggingface, projects
+from app.api.endpoints import datasets, training_jobs, config, workers, huggingface, projects, models
 
 router = APIRouter()
 
@@ -44,4 +44,9 @@ router.include_router(
     projects.router,
     prefix="/projects",
     tags=["Projects"],
+)
+router.include_router(
+    models.router,
+    prefix="/models",
+    tags=["Models"],
 )

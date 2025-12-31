@@ -73,6 +73,13 @@ class TrainingConfig(Base):
     output_directory_base: Mapped[str | None] = mapped_column(String(512), nullable=True, default=None)
     model_cache_path: Mapped[str | None] = mapped_column(String(512), nullable=True, default=None)
     
+    # HuggingFace settings
+    hf_token: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
+    
+    # GPU settings
+    selected_gpus: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
+    gpu_auto_detect: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

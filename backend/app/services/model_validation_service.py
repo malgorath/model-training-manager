@@ -136,14 +136,36 @@ class ModelValidationService:
             
             # Try to load the model
             try:
-                model = AutoModelForCausalLM.from_pretrained(
+                # Load config first to validate it
+                from transformers import AutoConfig
+                config = AutoConfig.from_pretrained(
                     model_path,
                     trust_remote_code=True,
                 )
+                # Ensure config has model_type attribute
+                if not hasattr(config, 'model_type'):
+                    # If config is a dict, convert it properly
+                    if isinstance(config, dict):
+                        # This shouldn't happen, but handle it gracefully
+                        logger.warning(f"Config loaded as dict instead of Config object for {model_path}")
+                        # Try to reload with proper config class
+                        config = AutoConfig.from_pretrained(
+                            model_path,
+                            trust_remote_code=True,
+                            _from_auto=True,
+                        )
+                
+                # Now load the model
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    trust_remote_code=True,
+                    config=config,
+                )
                 del model  # Free memory
+                del config  # Free memory
                 logger.info(f"Successfully loaded model from {model_path}")
             except Exception as e:
-                error_msg = f"Failed to load model: {str(e)}"
+                error_msg = f"Failed to load model from {model_path}: {str(e)}"
                 errors.append(error_msg)
                 logger.error(error_msg)
             

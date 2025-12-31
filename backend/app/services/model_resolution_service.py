@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +49,7 @@ class ModelResolutionService:
         self,
         cache_base_path: Optional[str] = None,
         ollama_models_path: Optional[str] = None,
+        local_models_path: Optional[str] = None,
     ):
         """
         Initialize the model resolution service.
@@ -54,15 +57,43 @@ class ModelResolutionService:
         Args:
             cache_base_path: Base path for HuggingFace cache. Defaults to ~/.cache/huggingface/hub
             ollama_models_path: Path to Ollama models. Defaults to ~/.ollama/models
+            local_models_path: Path to app-managed local models directory. Defaults to ./data/models
         """
         if cache_base_path is None:
             cache_base_path = Path.home() / ".cache" / "huggingface" / "hub"
         if ollama_models_path is None:
             ollama_models_path = Path.home() / ".ollama" / "models"
+        if local_models_path is None:
+            local_models_path = settings.get_model_path()
         
         self.cache_base_path = Path(cache_base_path)
         self.ollama_models_path = Path(ollama_models_path)
+        self.local_models_path = Path(local_models_path)
         self.model_overrides: dict[str, str] = {}
+    
+    def _map_model_name(self, model_name: str) -> str:
+        """
+        Map Ollama model name to HuggingFace model name.
+        
+        Args:
+            model_name: Model identifier (may be Ollama or HuggingFace format).
+            
+        Returns:
+            HuggingFace model identifier.
+        """
+        mappings = {
+            "llama3.2:3b": "meta-llama/Llama-3.2-3B-Instruct",
+            "llama3.2:1b": "meta-llama/Llama-3.2-1B-Instruct",
+            "llama3.1:8b": "meta-llama/Llama-3.1-8B-Instruct",
+            "llama3:8b": "meta-llama/Meta-Llama-3-8B-Instruct",
+            "mistral:7b": "mistralai/Mistral-7B-Instruct-v0.2",
+            "mixtral:8x7b": "mistralai/Mixtral-8x7B-Instruct-v0.1",
+            "phi3:mini": "microsoft/Phi-3-mini-4k-instruct",
+            "gemma:7b": "google/gemma-7b-it",
+            "gemma2:9b": "google/gemma-2-9b-it",
+        }
+        # Return mapped name if it's an Ollama name, otherwise return as-is (HuggingFace name)
+        return mappings.get(model_name, model_name)
     
     def set_model_override(self, model_name: str, local_path: str) -> None:
         """
@@ -84,7 +115,7 @@ class ModelResolutionService:
         2. HuggingFace cache
         
         Args:
-            model_name: Model identifier (e.g., "meta-llama/Llama-3.2-3B-Instruct").
+            model_name: Model identifier (e.g., "llama3.2:3b" or "meta-llama/Llama-3.2-3B-Instruct").
             
         Returns:
             Absolute path to the model directory.
@@ -92,26 +123,69 @@ class ModelResolutionService:
         Raises:
             ModelNotFoundError: If model cannot be found in any location.
         """
-        # Check overrides first
-        if model_name in self.model_overrides:
-            override_path = Path(self.model_overrides[model_name])
-            if override_path.exists():
-                logger.info(f"Using model override: {model_name} -> {override_path}")
-                return str(override_path.absolute())
-            else:
-                logger.warning(f"Model override path does not exist: {override_path}")
+        # Map Ollama names to HuggingFace names
+        hf_model_name = self._map_model_name(model_name)
         
-        # Check HuggingFace cache
-        hf_path = self._check_huggingface_cache(model_name)
+        # Check overrides first (check both original and mapped name)
+        for check_name in [model_name, hf_model_name]:
+            if check_name in self.model_overrides:
+                override_path = Path(self.model_overrides[check_name])
+                if override_path.exists():
+                    logger.info(f"Using model override: {check_name} -> {override_path}")
+                    return str(override_path.absolute())
+                else:
+                    logger.warning(f"Model override path does not exist: {override_path}")
+        
+        # Check local models directory (app-managed)
+        local_path = self._check_local_models_directory(hf_model_name)
+        if local_path:
+            logger.info(f"Found model in local directory: {hf_model_name} -> {local_path}")
+            return str(local_path)
+        
+        # Check HuggingFace cache using the mapped name
+        hf_path = self._check_huggingface_cache(hf_model_name)
         if hf_path:
-            logger.info(f"Found model in HuggingFace cache: {model_name} -> {hf_path}")
+            logger.info(f"Found model in HuggingFace cache: {hf_model_name} -> {hf_path}")
             return str(hf_path)
         
         # Model not found
         raise ModelNotFoundError(
-            f"Model '{model_name}' not found. "
-            "Please ensure the model is downloaded to HuggingFace cache or configure a local path override."
+            f"Model '{model_name}' (mapped to '{hf_model_name}') not found. "
+            "Please ensure the model is downloaded locally, in HuggingFace cache, or configure a local path override."
         )
+    
+    def _check_local_models_directory(self, model_name: str) -> Optional[Path]:
+        """
+        Check if model exists in app-managed local models directory.
+        
+        Local models structure:
+        ./data/models/{org}/{model_name}/
+        
+        Args:
+            model_name: Model identifier (e.g., "meta-llama/Llama-3.2-3B-Instruct").
+            
+        Returns:
+            Path to model directory if found, None otherwise.
+        """
+        if not self.local_models_path.exists():
+            return None
+        
+        # Convert model name to directory structure
+        # "meta-llama/Llama-3.2-3B-Instruct" -> ./data/models/meta-llama/Llama-3.2-3B-Instruct
+        parts = model_name.split("/")
+        if len(parts) == 2:
+            org, model_name_part = parts
+            model_dir = self.local_models_path / org / model_name_part
+        else:
+            # Fallback for models without org
+            model_dir = self.local_models_path / model_name.replace("/", "_")
+        
+        if model_dir.exists() and model_dir.is_dir():
+            # Check if it has required files
+            if self._is_valid_model_directory(model_dir):
+                return model_dir
+        
+        return None
     
     def _check_huggingface_cache(self, model_name: str) -> Optional[Path]:
         """

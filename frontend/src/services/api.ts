@@ -27,6 +27,7 @@ import type {
   ProjectCreate,
   ProjectUpdate,
   ProjectListResponse,
+  GPUInfo,
 } from '../types';
 
 const API_BASE_URL = '/api/v1';
@@ -104,6 +105,20 @@ export const datasetApi = {
 
   delete: async (id: number): Promise<void> => {
     await api.delete(`/datasets/${id}`);
+  },
+
+  /**
+   * Scan the data directory structure and auto-add valid datasets to the database.
+   */
+  scan: async (): Promise<{
+    scanned: number;
+    added: number;
+    skipped: number;
+    added_datasets: string[];
+    skipped_paths: string[];
+  }> => {
+    const response = await api.post('/datasets/scan');
+    return response.data;
   },
 };
 
@@ -200,6 +215,11 @@ export const configApi = {
     const response = await api.patch('/config/', data);
     return response.data;
   },
+
+  getGPUs: async (): Promise<GPUInfo[]> => {
+    const response = await api.get('/config/gpus');
+    return response.data;
+  },
 };
 
 // Worker API
@@ -224,6 +244,72 @@ export const workerApi = {
 
   restart: async (): Promise<WorkerPoolStatus> => {
     return workerApi.control({ action: 'restart' });
+  },
+};
+
+// Models API
+export const modelsApi = {
+  /**
+   * Search for models on HuggingFace Hub.
+   */
+  search: async (query: string, limit: number = 20, offset: number = 0): Promise<ModelSearchResponse> => {
+    const response = await api.get('/models/search', {
+      params: { query, limit, offset },
+    });
+    return response.data;
+  },
+
+  /**
+   * Get detailed information about a model from HuggingFace Hub.
+   */
+  getInfo: async (modelId: string): Promise<HuggingFaceModel> => {
+    const response = await api.get(`/models/${encodeURIComponent(modelId)}`);
+    return response.data;
+  },
+
+  /**
+   * Download a model from HuggingFace Hub.
+   */
+  download: async (modelId: string): Promise<ModelDownloadResponse> => {
+    const response = await api.post('/models/download', { model_id: modelId } as ModelDownloadRequest);
+    return response.data;
+  },
+
+  /**
+   * List all locally downloaded models.
+   */
+  listLocal: async (): Promise<LocalModel[]> => {
+    const response = await api.get('/models/');
+    return response.data;
+  },
+
+  /**
+   * Get information about a locally downloaded model.
+   */
+  getLocal: async (modelId: string): Promise<LocalModel> => {
+    const response = await api.get(`/models/local/${encodeURIComponent(modelId)}`);
+    return response.data;
+  },
+
+  /**
+   * Delete a locally downloaded model.
+   */
+  deleteLocal: async (modelId: string): Promise<void> => {
+    await api.delete(`/models/local/${encodeURIComponent(modelId)}`);
+  },
+
+  /**
+   * Scan the model directory structure and auto-add valid models to the database.
+   */
+  scan: async (): Promise<{
+    scanned: number;
+    added: number;
+    skipped: number;
+    added_models: string[];
+    skipped_paths: string[];
+  }> => {
+    const response = await api.post('/models/scan');
+    return response.data;
   },
 };
 
@@ -280,8 +366,22 @@ export const projectApi = {
     return response.data;
   },
 
+  delete: async (id: number): Promise<void> => {
+    await api.delete(`/projects/${id}`);
+  },
+
   start: async (id: number): Promise<Project> => {
     const response = await api.post(`/projects/${id}/start`);
+    return response.data;
+  },
+
+  cancel: async (id: number): Promise<Project> => {
+    const response = await api.post(`/projects/${id}/cancel`);
+    return response.data;
+  },
+
+  retry: async (id: number): Promise<Project> => {
+    const response = await api.post(`/projects/${id}/retry`);
     return response.data;
   },
 
@@ -302,6 +402,16 @@ export const projectApi = {
 
   listAvailableModels: async (): Promise<string[]> => {
     const response = await api.get('/projects/models/available');
+    return response.data;
+  },
+
+  getModelTypes: async (modelName: string): Promise<{
+    model_type: string;
+    available_types: string[];
+    recommended: string | null;
+    model_name: string;
+  }> => {
+    const response = await api.get(`/projects/models/${encodeURIComponent(modelName)}/types`);
     return response.data;
   },
 };

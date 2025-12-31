@@ -1,0 +1,97 @@
+# --- Version Control ---
+.git/
+.svn/
+.hg/
+
+# --- Dependency Folders (The CPU Killers) ---
+node_modules/
+vendor/
+bower_components/
+__pycache__/
+.venv/
+venv/
+env/
+.env/
+.env.*
+!.env.example
+
+# --- Laravel Specific ---
+storage/framework/
+storage/logs/
+storage/debugbar/
+bootstrap/cache/
+public/storage/
+public/hot/
+.phpunit.result.cache
+
+# --- Python & Django Specific ---
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.mypy_cache/
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+htmlcov/
+
+# --- IDE & System Files ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.cursor/
+
+# --- Build & Output Folders ---
+dist/
+out/
+build/
+.next/
+.nuxt/
+.sass-cache/
+public/build/
+mix-manifest.json
+
+# --- Database & Logs ---
+*.log
+*.sqlite
+*.sql
+*.dump
+docker/data/
+
+# --- Large Media & Documents ---
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.pdf
+*.exe
+*.dll
+*.so
+*.dmg
+*.iso
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.mp4
+*.mov

@@ -27,7 +27,9 @@ def test_settings() -> Settings:
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Settings(
             database_url="sqlite:///:memory:",
-            upload_dir=Path(tmpdir) / "uploads",
+            upload_dir=Path(tmpdir) / "data",
+            model_dir=Path(tmpdir) / "data" / "models",
+            archive_dir=Path(tmpdir) / "data" / "archives",
             debug=True,
             environment="development",
         )
@@ -95,10 +97,10 @@ def sample_json_content() -> bytes:
 
 @pytest.fixture
 def temp_upload_dir(tmp_path: Path) -> Path:
-    """Create a temporary upload directory."""
-    upload_dir = tmp_path / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    return upload_dir
+    """Create a temporary data directory (replaces uploads)."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
 
 
 @pytest.fixture

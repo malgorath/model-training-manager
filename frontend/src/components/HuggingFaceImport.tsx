@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { huggingfaceApi } from '../services/api';
 import type { HFDataset, HFDownloadRequest } from '../types';
+import LoadingModal from './LoadingModal';
 
 interface HuggingFaceImportProps {
   onSuccess: () => void;
@@ -21,6 +22,8 @@ interface HuggingFaceImportProps {
 
 /**
  * Component for searching and importing datasets from Hugging Face Hub.
+ * 
+ * Note: This component is specifically for datasets. For models, use the ModelsPage search interface.
  */
 export default function HuggingFaceImport({ onSuccess, onClose }: HuggingFaceImportProps) {
   const queryClient = useQueryClient();
@@ -82,7 +85,13 @@ export default function HuggingFaceImport({ onSuccess, onClose }: HuggingFaceImp
   };
 
   return (
-    <div className="w-[95vw] max-w-[1400px] max-h-[90vh] flex flex-col overflow-hidden rounded-xl border border-surface-700 bg-surface-900 shadow-2xl">
+    <>
+      <LoadingModal
+        isOpen={downloadMutation.isPending}
+        message="Downloading Dataset"
+        subtitle={`Downloading ${selectedDataset?.id || 'dataset'} from HuggingFace... This may take a while.`}
+      />
+      <div className="w-[95vw] max-w-[1400px] max-h-[90vh] flex flex-col overflow-hidden rounded-xl border border-surface-700 bg-surface-900 shadow-2xl">
       {/* Header */}
       <div className="flex flex-shrink-0 items-center justify-between border-b border-surface-800 bg-surface-800/50 px-6 py-4">
         <div className="flex items-center gap-3">
@@ -350,6 +359,7 @@ export default function HuggingFaceImport({ onSuccess, onClose }: HuggingFaceImp
         </div>
       </div>
     </div>
+    </>
   );
 }
 

@@ -17,6 +17,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 from app.models.dataset import Dataset
+from app.models.project import Project
 from app.models.training_job import TrainingJob, TrainingStatus
 from app.models.training_config import TrainingConfig
 from app.schemas.training_job import TrainingJobCreate, TrainingJobUpdate, TrainingJobProgress
@@ -136,6 +137,9 @@ class TrainingService:
         """
         List training jobs with pagination and optional filtering.
         
+        Includes both TrainingJob records and Project records that are in training.
+        Projects are converted to a TrainingJob-like format for unified display.
+        
         Args:
             page: Page number (1-indexed).
             page_size: Number of items per page.
@@ -143,20 +147,56 @@ class TrainingService:
             
         Returns:
             Dictionary with items, total, page, page_size, and pages.
+            Items can be either TrainingJob or Project objects.
         """
-        query = self.db.query(TrainingJob).order_by(TrainingJob.created_at.desc())
+        from app.models.project import Project, ProjectStatus
+        
+        # Get TrainingJob records
+        job_query = self.db.query(TrainingJob).order_by(TrainingJob.created_at.desc())
+        if status:
+            job_query = job_query.filter(TrainingJob.status == status.value)
+        jobs = job_query.all()
+        
+        # Get Project records that are in training status
+        project_query = self.db.query(Project).order_by(Project.created_at.desc())
+        # Only include projects that are actively training (not just created)
+        training_statuses = [
+            ProjectStatus.PENDING.value,
+            ProjectStatus.RUNNING.value,
+            ProjectStatus.COMPLETED.value,
+            ProjectStatus.FAILED.value,
+            ProjectStatus.CANCELLED.value,
+        ]
+        project_query = project_query.filter(Project.status.in_(training_statuses))
         
         if status:
-            query = query.filter(TrainingJob.status == status.value)
+            # Map TrainingStatus to ProjectStatus
+            status_map = {
+                TrainingStatus.PENDING: ProjectStatus.PENDING.value,
+                TrainingStatus.QUEUED: ProjectStatus.PENDING.value,
+                TrainingStatus.RUNNING: ProjectStatus.RUNNING.value,
+                TrainingStatus.COMPLETED: ProjectStatus.COMPLETED.value,
+                TrainingStatus.FAILED: ProjectStatus.FAILED.value,
+                TrainingStatus.CANCELLED: ProjectStatus.CANCELLED.value,
+            }
+            project_status = status_map.get(status)
+            if project_status:
+                project_query = project_query.filter(Project.status == project_status)
         
-        total = query.count()
+        projects = project_query.all()
+        
+        # Combine and sort by created_at
+        all_items = list(jobs) + list(projects)
+        all_items.sort(key=lambda x: x.created_at, reverse=True)
+        
+        # Apply pagination
+        total = len(all_items)
         pages = ceil(total / page_size) if total > 0 else 1
-        
         offset = (page - 1) * page_size
-        items = query.offset(offset).limit(page_size).all()
+        paginated_items = all_items[offset:offset + page_size]
         
         return {
-            "items": items,
+            "items": paginated_items,
             "total": total,
             "page": page,
             "page_size": page_size,
@@ -232,37 +272,61 @@ class TrainingService:
         
         return job
     
-    def cancel_job(self, job_id: int) -> TrainingJob | None:
+    def cancel_job(self, job_id: int) -> TrainingJob | Project | None:
         """
-        Cancel a training job.
+        Cancel a training job or project.
+        
+        Handles both TrainingJob IDs and Project IDs (since Projects appear in jobs list).
+        Handles jobs/projects stuck in running state even when no workers are active.
         
         Args:
-            job_id: Training job ID.
+            job_id: Training job ID or Project ID.
             
         Returns:
-            Cancelled TrainingJob object.
+            Cancelled TrainingJob or Project object.
             
         Raises:
-            ValueError: If job not found or cannot be cancelled.
+            ValueError: If job/project not found or cannot be cancelled.
         """
+        # First try to get as TrainingJob
         job = self.get_job(job_id)
-        if not job:
-            raise ValueError(f"Job with ID {job_id} not found")
         
-        if job.status in (TrainingStatus.COMPLETED.value, TrainingStatus.CANCELLED.value):
-            raise ValueError(f"Cannot cancel job with status: {job.status}")
+        if job:
+            # It's a TrainingJob - cancel it
+            if job.status in (TrainingStatus.COMPLETED.value, TrainingStatus.CANCELLED.value):
+                raise ValueError(f"Cannot cancel job with status: {job.status}")
+            
+            # Cancel in worker pool if running (even if no workers, this will clean up queue)
+            if job.status == TrainingStatus.RUNNING.value:
+                cancelled_in_pool = self.worker_pool.cancel_job(job.id)
+                # If job wasn't in pool (e.g., workers stopped but job still marked running),
+                # we still cancel it - this handles stuck jobs
+                if not cancelled_in_pool:
+                    logger.warning(f"Job {job_id} was running but not found in worker pool - cancelling anyway (likely workers were stopped)")
+            
+            # Always update status to cancelled, even if not found in worker pool
+            # This handles the case where workers were stopped but job is still marked running
+            job.status = TrainingStatus.CANCELLED.value
+            job.completed_at = datetime.utcnow()
+            job.worker_id = None  # Clear worker assignment
+            
+            self.db.commit()
+            self.db.refresh(job)
+            
+            logger.info(f"Cancelled job {job_id} (status was: {job.status})")
+            return job
         
-        # Cancel in worker pool if running
-        if job.status == TrainingStatus.RUNNING.value:
-            self.worker_pool.cancel_job(job.id)
+        # If not found as TrainingJob, try as Project
+        from app.models.project import Project, ProjectStatus
+        from app.services.project_service import ProjectService
         
-        job.status = TrainingStatus.CANCELLED.value
-        job.completed_at = datetime.utcnow()
+        project = self.db.query(Project).filter(Project.id == job_id).first()
+        if project:
+            # Cancel via ProjectService
+            project_service = ProjectService(db=self.db)
+            return project_service.cancel_project(job_id)
         
-        self.db.commit()
-        self.db.refresh(job)
-        
-        return job
+        raise ValueError(f"Job or Project with ID {job_id} not found")
     
     def delete_job(self, job_id: int) -> bool:
         """
@@ -310,9 +374,21 @@ class TrainingService:
         Returns:
             Updated TrainingConfig object.
         """
+        import json
+        
         config = self.get_config()
         
         update_dict = update_data.model_dump(exclude_unset=True)
+        
+        # Handle selected_gpus: convert list to JSON string
+        if "selected_gpus" in update_dict:
+            gpus = update_dict.pop("selected_gpus")
+            if gpus is not None:
+                config.selected_gpus = json.dumps(gpus)
+            else:
+                config.selected_gpus = None
+        
+        # Handle other fields
         for field, value in update_dict.items():
             setattr(config, field, value)
         
@@ -414,6 +490,8 @@ class TrainingService:
         Raises:
             ValueError: If count exceeds maximum workers.
         """
+        import json
+        
         config = self.get_config()
         if count > config.max_concurrent_workers:
             raise ValueError(
@@ -421,7 +499,21 @@ class TrainingService:
                 f"Maximum allowed: {config.max_concurrent_workers}"
             )
         
-        self.worker_pool.start_workers(count)
+        # Get GPU configuration
+        selected_gpus = None
+        if not config.gpu_auto_detect and config.selected_gpus:
+            try:
+                selected_gpus = json.loads(config.selected_gpus)
+            except (json.JSONDecodeError, TypeError):
+                selected_gpus = None
+        elif config.gpu_auto_detect:
+            # Auto-detect: get all available GPUs
+            from app.services.gpu_service import GPUService
+            gpu_service = GPUService()
+            gpus = gpu_service.detect_gpus()
+            selected_gpus = [gpu["id"] for gpu in gpus] if gpus else None
+        
+        self.worker_pool.start_workers(count, selected_gpus=selected_gpus)
         
         # Submit any pending or orphaned queued jobs to the pool now that it's running
         # First, get current jobs in pool (before submitting new ones)
@@ -472,11 +564,27 @@ class TrainingService:
     
     def restart_workers(self) -> None:
         """Restart all workers."""
+        import json
+        
         config = self.get_config()
         current_count = self.worker_pool.active_worker_count
         
+        # Get GPU configuration
+        selected_gpus = None
+        if not config.gpu_auto_detect and config.selected_gpus:
+            try:
+                selected_gpus = json.loads(config.selected_gpus)
+            except (json.JSONDecodeError, TypeError):
+                selected_gpus = None
+        elif config.gpu_auto_detect:
+            # Auto-detect: get all available GPUs
+            from app.services.gpu_service import GPUService
+            gpu_service = GPUService()
+            gpus = gpu_service.detect_gpus()
+            selected_gpus = [gpu["id"] for gpu in gpus] if gpus else None
+        
         self.worker_pool.stop_all_workers()
-        self.worker_pool.start_workers(current_count or config.max_concurrent_workers)
+        self.worker_pool.start_workers(current_count or config.max_concurrent_workers, selected_gpus=selected_gpus)
         
         config.active_workers = self.worker_pool.active_worker_count
         self.db.commit()
@@ -528,8 +636,7 @@ class TrainingService:
             return single_file, single_file.name
         
         # Multiple files - create/get tar.gz archive
-        archive_dir = Path(settings.upload_dir) / "archives"
-        archive_dir.mkdir(parents=True, exist_ok=True)
+        archive_dir = settings.get_archive_path()
         
         archive_name = f"model_job_{job_id}.tar.gz"
         archive_path = archive_dir / archive_name

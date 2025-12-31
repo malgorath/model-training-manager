@@ -99,26 +99,95 @@ def migrate_db() -> None:
         if "auto_start_workers" not in columns:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE training_config ADD COLUMN auto_start_workers BOOLEAN DEFAULT 0"))
+    
+    # Check if projects table exists
+    if "projects" in inspector.get_table_names():
+        columns = [col["name"] for col in inspector.get_columns("projects")]
         
-        # Add model_provider column if it doesn't exist
-        if "model_provider" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE training_config ADD COLUMN model_provider VARCHAR(20) DEFAULT 'ollama'"))
+        # Add model_type column if it doesn't exist
+        if "model_type" not in columns:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN model_type VARCHAR(50)"))
+            except Exception:
+                pass  # Column might already exist
+    
+    # Check if projects table exists
+    if "projects" in inspector.get_table_names():
+        columns = [col["name"] for col in inspector.get_columns("projects")]
         
-        # Add model_api_url column if it doesn't exist
-        if "model_api_url" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE training_config ADD COLUMN model_api_url VARCHAR(500) DEFAULT 'http://localhost:11434'"))
-        
-        # Add output_directory_base column if it doesn't exist
-        if "output_directory_base" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE training_config ADD COLUMN output_directory_base VARCHAR(512)"))
-        
-        # Add model_cache_path column if it doesn't exist
-        if "model_cache_path" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE training_config ADD COLUMN model_cache_path VARCHAR(512)"))
+        # Make max_rows nullable if it exists and is not nullable
+        if "max_rows" in columns:
+            # Check if column is nullable by checking the column info
+            max_rows_col = next(col for col in inspector.get_columns("projects") if col["name"] == "max_rows")
+            if not max_rows_col.get("nullable", False):
+                # SQLite doesn't support ALTER COLUMN, so we need to recreate the table
+                try:
+                    with engine.begin() as conn:
+                        # SQLite workaround: create a new table, copy data, drop old, rename new
+                        conn.execute(text("""
+                            CREATE TABLE projects_new (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                name VARCHAR(255) NOT NULL,
+                                description TEXT,
+                                base_model VARCHAR(255) NOT NULL,
+                                model_type VARCHAR(50),
+                                training_type VARCHAR(20) NOT NULL DEFAULT 'qlora',
+                                max_rows INTEGER,
+                                output_directory VARCHAR(512) NOT NULL,
+                                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                                progress FLOAT NOT NULL DEFAULT 0.0,
+                                current_epoch INTEGER NOT NULL DEFAULT 0,
+                                current_loss FLOAT,
+                                error_message TEXT,
+                                log TEXT,
+                                model_path VARCHAR(500),
+                                worker_id VARCHAR(50),
+                                started_at DATETIME,
+                                completed_at DATETIME,
+                                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            )
+                        """))
+                        # Check if model_type column exists in old table
+                        old_columns = [col["name"] for col in inspector.get_columns("projects")]
+                        has_model_type = "model_type" in old_columns
+                        
+                        if has_model_type:
+                            conn.execute(text("""
+                                INSERT INTO projects_new 
+                                (id, name, description, base_model, model_type, training_type, max_rows, output_directory, 
+                                 status, progress, current_epoch, current_loss, error_message, log, model_path, 
+                                 worker_id, started_at, completed_at, created_at, updated_at)
+                                SELECT 
+                                    id, name, description, base_model, model_type, training_type, max_rows, output_directory,
+                                    status, progress, current_epoch, current_loss, error_message, log, model_path,
+                                    worker_id, started_at, completed_at, created_at, updated_at
+                                FROM projects
+                            """))
+                        else:
+                            conn.execute(text("""
+                                INSERT INTO projects_new 
+                                (id, name, description, base_model, training_type, max_rows, output_directory, 
+                                 status, progress, current_epoch, current_loss, error_message, log, model_path, 
+                                 worker_id, started_at, completed_at, created_at, updated_at)
+                                SELECT 
+                                    id, name, description, base_model, training_type, max_rows, output_directory,
+                                    status, progress, current_epoch, current_loss, error_message, log, model_path,
+                                    worker_id, started_at, completed_at, created_at, updated_at
+                                FROM projects
+                            """))
+                        conn.execute(text("DROP TABLE projects"))
+                        conn.execute(text("ALTER TABLE projects_new RENAME TO projects"))
+                        # Recreate indexes
+                        conn.execute(text("CREATE INDEX ix_projects_name ON projects (name)"))
+                        conn.execute(text("CREATE INDEX ix_projects_base_model ON projects (base_model)"))
+                        conn.execute(text("CREATE INDEX ix_projects_status ON projects (status)"))
+                        conn.execute(text("CREATE INDEX ix_projects_worker_id ON projects (worker_id)"))
+                except Exception as e:
+                    # If migration fails, log but don't crash - the app will work with existing schema
+                    import logging
+                    logging.getLogger(__name__).warning(f"Could not migrate max_rows to nullable: {e}")
 
 
 def init_db() -> None:

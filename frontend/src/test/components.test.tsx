@@ -104,6 +104,7 @@ import DatasetList from '../components/DatasetList';
 import WorkerDashboard from '../components/WorkerDashboard';
 import JobMonitor from '../components/JobMonitor';
 import TrainingConfig from '../components/TrainingConfig';
+import SettingsPage from '../pages/SettingsPage';
 
 /**
  * Create a wrapper with providers for testing.
@@ -137,6 +138,28 @@ describe('Layout Component', () => {
 
     expect(screen.getByText('Trainers')).toBeInTheDocument();
     expect(screen.getByText('Model Training Manager')).toBeInTheDocument();
+  });
+
+  it('renders footer with Scott Sanders attribution', () => {
+    render(<Layout />, { wrapper: createWrapper() });
+
+    expect(screen.getByText(/Powered by/)).toBeInTheDocument();
+    const scottSandersLink = screen.getByText('Scott Sanders');
+    expect(scottSandersLink).toBeInTheDocument();
+    expect(scottSandersLink.closest('a')).toHaveAttribute('href', 'http://scott-sanders.dev');
+    expect(screen.getByText('MIT License')).toBeInTheDocument();
+  });
+
+  it('footer links have correct attributes', () => {
+    render(<Layout />, { wrapper: createWrapper() });
+
+    const scottSandersLink = screen.getByText('Scott Sanders').closest('a');
+    expect(scottSandersLink).toHaveAttribute('target', '_blank');
+    expect(scottSandersLink).toHaveAttribute('rel', 'noopener noreferrer');
+
+    const licenseLink = screen.getByText('MIT License').closest('a');
+    expect(licenseLink).toHaveAttribute('href', '/LICENSE');
+    expect(licenseLink).toHaveAttribute('target', '_blank');
   });
 });
 
@@ -287,12 +310,126 @@ describe('TrainingConfig Component', () => {
     });
   });
 
+  it('does not display Model API Settings section', async () => {
+    render(<TrainingConfig />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Training Configuration')).toBeInTheDocument();
+    });
+
+    // Verify Model API Settings section is not present
+    expect(screen.queryByText('Model API Settings')).not.toBeInTheDocument();
+    expect(screen.queryByText('Model Provider')).not.toBeInTheDocument();
+    expect(screen.queryByText('Model API URL')).not.toBeInTheDocument();
+  });
+
+  it('displays GPU selection section', async () => {
+    render(<TrainingConfig />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('GPU Selection')).toBeInTheDocument();
+    });
+  });
+
+  it('displays HuggingFace settings section', async () => {
+    render(<TrainingConfig />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('HuggingFace Settings')).toBeInTheDocument();
+      expect(screen.getByText('HuggingFace API Token')).toBeInTheDocument();
+    });
+  });
+
+  it('displays directory settings section', async () => {
+    render(<TrainingConfig />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Directory Settings')).toBeInTheDocument();
+      expect(screen.getByText('Output Directory Base')).toBeInTheDocument();
+      expect(screen.getByText('Model Cache Path')).toBeInTheDocument();
+    });
+  });
+
   it('has save button', async () => {
     render(<TrainingConfig />, { wrapper: createWrapper() });
 
     await waitFor(() => {
       expect(screen.getByText('Save Changes')).toBeInTheDocument();
     });
+  });
+});
+
+describe('SettingsPage Component', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders settings page header', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Settings')).toBeInTheDocument();
+      expect(screen.getByText('Configure training parameters and system settings')).toBeInTheDocument();
+    });
+  });
+
+  it('renders TrainingConfig component', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('Training Configuration')).toBeInTheDocument();
+    });
+  });
+
+  it('renders system status section', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('System Status')).toBeInTheDocument();
+      expect(screen.getByText('Backend service health')).toBeInTheDocument();
+    });
+  });
+
+  it('renders about section with Scott Sanders attribution', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('About')).toBeInTheDocument();
+      expect(screen.getByText(/Powered by/)).toBeInTheDocument();
+      
+      const scottSandersLink = screen.getByText('Scott Sanders');
+      expect(scottSandersLink).toBeInTheDocument();
+      expect(scottSandersLink.closest('a')).toHaveAttribute('href', 'http://scott-sanders.dev');
+      
+      const licenseLink = screen.getByText('MIT License');
+      expect(licenseLink).toBeInTheDocument();
+      expect(licenseLink.closest('a')).toHaveAttribute('href', '/LICENSE');
+    });
+  });
+
+  it('about section links have correct attributes', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      const scottSandersLink = screen.getByText('Scott Sanders').closest('a');
+      expect(scottSandersLink).toHaveAttribute('target', '_blank');
+      expect(scottSandersLink).toHaveAttribute('rel', 'noopener noreferrer');
+
+      const licenseLink = screen.getByText('MIT License').closest('a');
+      expect(licenseLink).toHaveAttribute('target', '_blank');
+    });
+  });
+
+  it('does not display Ollama attribution', async () => {
+    render(<SettingsPage />, { wrapper: createWrapper() });
+
+    await waitFor(() => {
+      expect(screen.getByText('About')).toBeInTheDocument();
+    });
+
+    // Verify old Ollama attribution is not present
+    expect(screen.queryByText(/Ollama/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/llama3.2:3b/)).not.toBeInTheDocument();
   });
 });
 

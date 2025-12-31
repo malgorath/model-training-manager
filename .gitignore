@@ -31,6 +31,8 @@ env/
 .coverage
 htmlcov/
 .tox/
+.cursorrules
+.voidrules
 
 # Type checking
 .mypy_cache/
@@ -63,14 +65,35 @@ build/
 .env.local
 .env.*.local
 
-# Database
+# Database (PII - Never commit)
 *.db
 *.sqlite
 *.sqlite3
+**/trainers.db
+**/*.db-journal
+**/*.db-wal
+**/*.db-shm
+
+# Output directories (training artifacts, may contain PII)
+output/
+**/output/
+backend/output/
+frontend/output/
+
+# Data directories (may contain PII)
+backend/app/data/
+**/app/data/
+backend/data/
+**/data/user/
+**/data/models/
 
 # Logs
 *.log
 logs/
+backend.log
+frontend.log
+*.backend.log
+*.frontend.log
 
 # OS files
 .DS_Store
@@ -86,6 +109,7 @@ Thumbs.db
 *.temp
 *.bak
 *.swp
+*.pid
 
 # Upload directory (contents, not directory itself)
 uploads/*

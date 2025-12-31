@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { X, Loader2, AlertCircle, CheckCircle2, Info, Plus, Trash2, HelpCircle } from 'lucide-react';
+import { X, Loader2, AlertCircle, Info, Plus, Trash2 } from 'lucide-react';
 import { projectApi, datasetApi, configApi } from '../services/api';
 import type { ProjectCreate, TraitType, DatasetAllocation, TrainingType } from '../types';
 import { HelpTooltip } from './Tutorial';
@@ -26,7 +26,6 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
     description: '',
     base_model: '',
     training_type: 'qlora',
-    max_rows: 50000,
     output_directory: '',
     traits: [],
   });
@@ -43,22 +42,111 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
 
   const datasets = datasetsData?.items || [];
 
+  const { data: availableModels, isLoading: loadingModels } = useQuery({
+    queryKey: ['availableModels'],
+    queryFn: () => projectApi.listAvailableModels(),
+  });
+
   const [traits, setTraits] = useState<TraitConfig[]>([]);
   const [outputDirValid, setOutputDirValid] = useState<boolean | null>(null);
   const [modelValid, setModelValid] = useState<boolean | null>(null);
   const [validatingDir, setValidatingDir] = useState(false);
   const [validatingModel, setValidatingModel] = useState(false);
+  const [modelTypes, setModelTypes] = useState<{
+    model_type: string;
+    available_types: string[];
+    recommended: string | null;
+  } | null>(null);
+  const [loadingModelTypes, setLoadingModelTypes] = useState(false);
 
+  // Helper function to sanitize project name for filesystem
+  const sanitizeProjectName = (name: string): string => {
+    return name
+      .replace(/[<>:"/\\|?*]/g, '_') // Replace invalid filesystem characters
+      .replace(/\s+/g, '-') // Replace spaces with hyphens
+      .replace(/\.+$/, '') // Remove trailing dots
+      .toLowerCase()
+      .trim() || 'project';
+  };
+
+  // Track if user manually edited output_directory
+  const [outputDirManuallyEdited, setOutputDirManuallyEdited] = useState(false);
+
+  // Set default model when config loads
   useEffect(() => {
-    if (config?.default_model) {
+    if (config?.default_model && !formData.base_model) {
       setFormData(prev => ({ ...prev, base_model: config.default_model }));
     }
-  }, [config]);
+  }, [config, formData.base_model]);
+
+  // Fetch model types when base_model changes
+  useEffect(() => {
+    if (formData.base_model && availableModels && availableModels.includes(formData.base_model)) {
+      setLoadingModelTypes(true);
+      projectApi.getModelTypes(formData.base_model)
+        .then((data) => {
+          setModelTypes(data);
+          // Auto-set recommended model_type if available
+          if (data.recommended && !formData.model_type) {
+            setFormData(prev => ({ ...prev, model_type: data.recommended || undefined }));
+          } else if (data.model_type && !formData.model_type) {
+            // Fallback to detected model_type if recommended not available
+            setFormData(prev => ({ ...prev, model_type: data.model_type || undefined }));
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to fetch model types:', err);
+          setModelTypes(null);
+        })
+        .finally(() => {
+          setLoadingModelTypes(false);
+        });
+    } else {
+      setModelTypes(null);
+      setFormData(prev => ({ ...prev, model_type: undefined }));
+    }
+  }, [formData.base_model, availableModels]);
+
+  // Auto-generate output directory from base + project name
+  useEffect(() => {
+    // Use config value or default to './output'
+    const baseDir = (config?.output_directory_base || './output').trim();
+    
+    // Skip if manually edited
+    if (outputDirManuallyEdited) {
+      return;
+    }
+    
+    if (formData.name && formData.name.trim()) {
+      // Project name exists - generate full path: base/project-name
+      const sanitizedName = sanitizeProjectName(formData.name);
+      const generatedPath = baseDir.endsWith('/') 
+        ? `${baseDir}${sanitizedName}`
+        : `${baseDir}/${sanitizedName}`;
+      
+      // Always update when name changes
+      setFormData(prev => {
+        const currentPath = prev.output_directory || '';
+        // Update if empty, matches base, or matches the generated pattern
+        if (!currentPath || 
+            currentPath === baseDir || 
+            currentPath.startsWith(baseDir + '/')) {
+          return { ...prev, output_directory: generatedPath };
+        }
+        return prev;
+      });
+    } else if (!formData.output_directory) {
+      // No project name yet - just set the base directory
+      setFormData(prev => ({ ...prev, output_directory: baseDir }));
+    }
+  }, [config?.output_directory_base, formData.name, outputDirManuallyEdited]);
 
   const createMutation = useMutation({
     mutationFn: projectApi.create,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    onSuccess: async () => {
+      // Invalidate and refetch all project-related queries to refresh the list and counts
+      await queryClient.invalidateQueries({ queryKey: ['projects'] });
+      await queryClient.refetchQueries({ queryKey: ['projects'] });
       onSuccess?.();
     },
   });
@@ -78,6 +166,11 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
 
   const validateModel = async (modelName: string) => {
     if (!modelName) return;
+    // Skip validation if model is in the available models list
+    if (availableModels && availableModels.includes(modelName)) {
+      setModelValid(true);
+      return;
+    }
     setValidatingModel(true);
     try {
       const result = await projectApi.validateModel(modelName);
@@ -99,8 +192,17 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
   };
 
   const addDatasetToTrait = (traitIndex: number, datasetId: number, percentage: number) => {
+    if (traitIndex < 0 || traitIndex >= traits.length) {
+      console.error(`Invalid trait index: ${traitIndex}`);
+      return;
+    }
     const updated = [...traits];
     const trait = updated[traitIndex];
+    
+    if (!trait || !trait.datasets) {
+      console.error(`Trait at index ${traitIndex} is invalid`);
+      return;
+    }
     
     // Check if dataset already used in this trait
     if (trait.datasets.find(d => d.dataset_id === datasetId)) return;
@@ -121,30 +223,40 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
     setTraits(updated);
   };
 
-  const getTotalPercentage = (traitIndex: number): number => {
-    return traits[traitIndex]?.datasets.reduce((sum, d) => sum + d.percentage, 0) || 0;
+  const calculateTotalRows = (): number => {
+    let total = 0;
+    traits.forEach(trait => {
+      trait.datasets.forEach(alloc => {
+        const dataset = datasets.find(d => d.id === alloc.dataset_id);
+        if (dataset) {
+          total += Math.floor((dataset.row_count * alloc.percentage) / 100);
+        }
+      });
+    });
+    return total;
   };
 
   const canProceedToNext = () => {
     if (step === 1) {
-      return formData.name && formData.base_model && formData.training_type && formData.max_rows;
+      return formData.name && formData.base_model && formData.training_type && formData.model_type && modelValid === true;
     }
     if (step === 2) {
       const reasoningTrait = traits.find(t => t.trait_type === 'reasoning');
-      return reasoningTrait && reasoningTrait.datasets.length === 1 && reasoningTrait.datasets[0].percentage === 100;
+      return reasoningTrait && reasoningTrait.datasets.length === 1;
     }
     if (step === 3) {
       const codingTrait = traits.find(t => t.trait_type === 'coding');
-      return !codingTrait || (codingTrait.datasets.length === 1 && codingTrait.datasets[0].percentage === 100);
+      return !codingTrait || codingTrait.datasets.length === 1;
     }
     if (step === 4) {
+      // General tools trait is optional, but if it exists, must have at least one dataset
       const generalTrait = traits.find(t => t.trait_type === 'general_tools');
-      if (!generalTrait) return true;
-      const total = getTotalPercentage(traits.indexOf(generalTrait));
-      return Math.abs(total - 100) < 0.01;
+      return !generalTrait || generalTrait.datasets.length > 0;
     }
     if (step === 5) {
-      return formData.output_directory && outputDirValid === true && modelValid === true;
+      // Only require output directory and model to be set, not validated
+      // Backend will create the directory if it doesn't exist
+      return formData.output_directory && modelValid === true;
     }
     return false;
   };
@@ -155,8 +267,8 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
       name: formData.name!,
       description: formData.description,
       base_model: formData.base_model!,
+      model_type: formData.model_type,
       training_type: formData.training_type as TrainingType,
-      max_rows: formData.max_rows!,
       output_directory: formData.output_directory!,
       traits: traits.map(t => ({
         trait_type: t.trait_type,
@@ -208,8 +320,23 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
               <input
                 type="text"
                 id="name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                value={formData.name || ''}
+                onChange={(e) => {
+                  const newName = e.target.value;
+                  setFormData(prev => {
+                    const updated = { ...prev, name: newName };
+                    // If output directory was auto-generated, allow it to update
+                    if (outputDirManuallyEdited && config?.output_directory_base) {
+                      const baseDir = config.output_directory_base.trim();
+                      const currentPath = prev.output_directory || '';
+                      // If current path matches the pattern, reset manual edit flag
+                      if (currentPath.startsWith(baseDir + '/') || currentPath === baseDir) {
+                        setOutputDirManuallyEdited(false);
+                      }
+                    }
+                    return updated;
+                  });
+                }}
                 className="input"
                 required
               />
@@ -228,26 +355,97 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
             </div>
             <div>
               <label htmlFor="base_model" className="label">
-                <HelpTooltip content="The base model to fine-tune. Must be available in your HuggingFace cache or configured local paths. Examples: meta-llama/Llama-3.2-3B-Instruct, microsoft/Phi-3-mini-4k-instruct">
+                <HelpTooltip content="The base model to fine-tune. Select from available models in your HuggingFace cache or configured local paths.">
                   Base Model *
                 </HelpTooltip>
               </label>
-              <input
-                type="text"
-                id="base_model"
-                value={formData.base_model}
-                onChange={(e) => {
-                  setFormData({ ...formData, base_model: e.target.value });
-                  setModelValid(null);
-                }}
-                onBlur={() => validateModel(formData.base_model || '')}
-                className="input"
-                required
-              />
-              {validatingModel && <p className="text-sm text-surface-400 mt-1">Validating...</p>}
-              {modelValid === true && <p className="text-sm text-green-400 mt-1">✓ Model available</p>}
-              {modelValid === false && <p className="text-sm text-red-400 mt-1">✗ Model not found</p>}
+              {loadingModels ? (
+                <div className="input flex items-center gap-2 text-surface-400">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading models...
+                </div>
+              ) : (
+                <select
+                  id="base_model"
+                  value={formData.base_model}
+                  onChange={(e) => {
+                    const selectedModel = e.target.value;
+                    setFormData({ ...formData, base_model: selectedModel });
+                    // Auto-validate if model is in available list
+                    if (selectedModel && availableModels && availableModels.includes(selectedModel)) {
+                      setModelValid(true);
+                    } else {
+                      setModelValid(null);
+                      if (selectedModel) {
+                        validateModel(selectedModel);
+                      }
+                    }
+                  }}
+                  className="input"
+                  required
+                >
+                  <option value="">Select a model...</option>
+                  {availableModels && availableModels.length > 0 ? (
+                    availableModels.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="" disabled>
+                      No models available
+                    </option>
+                  )}
+                </select>
+              )}
+              {!loadingModels && formData.base_model && modelValid === true && (
+                <p className="text-sm text-green-400 mt-1">✓ Model available</p>
+              )}
+              {!loadingModels && formData.base_model && modelValid === false && (
+                <p className="text-sm text-red-400 mt-1">✗ Model not found</p>
+              )}
             </div>
+            {formData.base_model && modelValid === true && (
+              <div>
+                <label htmlFor="model_type" className="label">
+                  <HelpTooltip content="The specific model architecture type (e.g., 'llama', 'bert'). Auto-detected from model config.json.">
+                    Model Type *
+                  </HelpTooltip>
+                </label>
+                {loadingModelTypes ? (
+                  <div className="input flex items-center gap-2 text-surface-400">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Detecting model types...
+                  </div>
+                ) : (
+                  <select
+                    id="model_type"
+                    value={formData.model_type || ''}
+                    onChange={(e) => setFormData({ ...formData, model_type: e.target.value })}
+                    className="input"
+                    required
+                    disabled={!modelTypes?.available_types?.length}
+                  >
+                    <option value="">Select Model Type</option>
+                    {modelTypes?.available_types?.map((type) => (
+                      <option key={type} value={type}>
+                        {type} {type === modelTypes.recommended && '(Recommended)'}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {modelTypes?.model_type && !formData.model_type && (
+                  <p className="text-sm text-surface-400 mt-1">
+                    Detected: <span className="font-semibold">{modelTypes.model_type}</span>. Select from dropdown.
+                  </p>
+                )}
+                {modelTypes?.model_type && formData.model_type && formData.model_type !== modelTypes.model_type && (
+                  <p className="text-sm text-yellow-400 mt-1">
+                    Warning: Detected model type is '{modelTypes.model_type}', but selected '{formData.model_type}'.
+                  </p>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label htmlFor="training_type" className="label">
@@ -266,26 +464,6 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                   <option value="standard">Standard</option>
                 </select>
               </div>
-              <div>
-                <label htmlFor="max_rows" className="label">
-                  <HelpTooltip content="Maximum number of training rows to use. The system will sample from your datasets to reach this limit based on percentage allocations.">
-                    Max Rows *
-                  </HelpTooltip>
-                </label>
-                <select
-                  id="max_rows"
-                  value={formData.max_rows}
-                  onChange={(e) => setFormData({ ...formData, max_rows: parseInt(e.target.value) as any })}
-                  className="input"
-                  required
-                >
-                  <option value={50000}>50K</option>
-                  <option value={100000}>100K</option>
-                  <option value={250000}>250K</option>
-                  <option value={500000}>500K</option>
-                  <option value={1000000}>1M</option>
-                </select>
-              </div>
             </div>
           </div>
         )}
@@ -298,7 +476,7 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
               <h4 className="text-lg font-semibold">Reasoning Trait</h4>
             </div>
             <p className="text-sm text-surface-400 mb-4">
-              Select exactly one dataset for reasoning training (100% allocation).
+              Select exactly one dataset for reasoning training. Set the percentage of the dataset file to use.
             </p>
             {(() => {
               const trait = traits.find(t => t.trait_type === 'reasoning') || { trait_type: 'reasoning' as TraitType, datasets: [] };
@@ -313,8 +491,8 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                         const datasetId = parseInt(e.target.value);
                         if (datasetId) {
                           if (traitIndex === -1) {
-                            addTrait('reasoning');
-                            setTimeout(() => addDatasetToTrait(traits.length, datasetId, 100), 0);
+                            // Add trait with dataset in one operation, default to 100%
+                            setTraits([...traits, { trait_type: 'reasoning' as TraitType, datasets: [{ dataset_id: datasetId, percentage: 100 }] }]);
                           } else {
                             addDatasetToTrait(traitIndex, datasetId, 100);
                           }
@@ -329,9 +507,9 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                       ))}
                     </select>
                   ) : (
-                    <div className="border border-surface-700 rounded-lg p-4">
+                    <div className="border border-surface-700 rounded-lg p-4 space-y-3">
                       <div className="flex items-center justify-between">
-                        <span>{datasets.find(d => d.id === trait.datasets[0].dataset_id)?.name}</span>
+                        <span className="font-medium">{datasets.find(d => d.id === trait.datasets[0].dataset_id)?.name}</span>
                         <button
                           type="button"
                           onClick={() => removeDatasetFromTrait(traitIndex, 0)}
@@ -340,9 +518,31 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                           <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
-                      <div className="mt-2">
-                        <label className="label text-sm">Percentage: 100%</label>
-                      </div>
+                      {(() => {
+                        const dataset = datasets.find(d => d.id === trait.datasets[0].dataset_id);
+                        const rowsUsed = dataset ? Math.floor((dataset.row_count * trait.datasets[0].percentage) / 100) : 0;
+                        return (
+                          <>
+                            <div>
+                              <label className="label text-sm">Percentage of dataset file to use</label>
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.01"
+                                value={trait.datasets[0].percentage}
+                                onChange={(e) => updatePercentage(traitIndex, 0, parseFloat(e.target.value) || 0)}
+                                className="input"
+                              />
+                            </div>
+                            {dataset && (
+                              <div className="text-sm text-surface-400">
+                                {dataset.row_count} rows × {trait.datasets[0].percentage}% = {rowsUsed} rows used
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
@@ -359,7 +559,7 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
               <h4 className="text-lg font-semibold">Coding Trait (Optional)</h4>
             </div>
             <p className="text-sm text-surface-400 mb-4">
-              Optionally select one dataset for coding training (100% allocation).
+              Optionally select one dataset for coding training. Set the percentage of the dataset file to use.
             </p>
             {(() => {
               const trait = traits.find(t => t.trait_type === 'coding');
@@ -396,9 +596,9 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                       ))}
                     </select>
                   ) : (
-                    <div className="border border-surface-700 rounded-lg p-4">
+                    <div className="border border-surface-700 rounded-lg p-4 space-y-3">
                       <div className="flex items-center justify-between">
-                        <span>{datasets.find(d => d.id === trait.datasets[0].dataset_id)?.name}</span>
+                        <span className="font-medium">{datasets.find(d => d.id === trait.datasets[0].dataset_id)?.name}</span>
                         <button
                           type="button"
                           onClick={() => removeTrait(traitIndex)}
@@ -407,6 +607,31 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                           <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
+                      {(() => {
+                        const dataset = datasets.find(d => d.id === trait.datasets[0].dataset_id);
+                        const rowsUsed = dataset ? Math.floor((dataset.row_count * trait.datasets[0].percentage) / 100) : 0;
+                        return (
+                          <>
+                            <div>
+                              <label className="label text-sm">Percentage of dataset file to use</label>
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.01"
+                                value={trait.datasets[0].percentage}
+                                onChange={(e) => updatePercentage(traitIndex, 0, parseFloat(e.target.value) || 0)}
+                                className="input"
+                              />
+                            </div>
+                            {dataset && (
+                              <div className="text-sm text-surface-400">
+                                {dataset.row_count} rows × {trait.datasets[0].percentage}% = {rowsUsed} rows used
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
@@ -423,7 +648,7 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
               <h4 className="text-lg font-semibold">General/Tools Trait (Optional)</h4>
             </div>
             <p className="text-sm text-surface-400 mb-4">
-              Add one or more datasets with percentages that sum to 100%.
+              Add one or more datasets. Set the percentage of each dataset file to use (0-100%).
             </p>
             {(() => {
               const trait = traits.find(t => t.trait_type === 'general_tools');
@@ -442,17 +667,18 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                 );
               }
               
-              const total = getTotalPercentage(traitIndex);
               const availableDatasets = datasets.filter(d => !traits.some(t => t.trait_type !== 'general_tools' && t.datasets.some(ds => ds.dataset_id === d.id)));
+              const totalRows = calculateTotalRows();
               
               return (
                 <div className="space-y-4">
                   {trait.datasets.map((alloc, idx) => {
                     const dataset = datasets.find(d => d.id === alloc.dataset_id);
+                    const rowsUsed = dataset ? Math.floor((dataset.row_count * alloc.percentage) / 100) : 0;
                     return (
-                      <div key={idx} className="border border-surface-700 rounded-lg p-4">
-                        <div className="flex items-center justify-between mb-2">
-                          <span>{dataset?.name}</span>
+                      <div key={idx} className="border border-surface-700 rounded-lg p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium">{dataset?.name}</span>
                           <button
                             type="button"
                             onClick={() => removeDatasetFromTrait(traitIndex, idx)}
@@ -461,16 +687,23 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                             <Trash2 className="h-4 w-4" />
                           </button>
                         </div>
-                        <label className="label text-sm">Percentage</label>
-                        <input
-                          type="number"
-                          min="0"
-                          max="100"
-                          step="0.01"
-                          value={alloc.percentage}
-                          onChange={(e) => updatePercentage(traitIndex, idx, parseFloat(e.target.value) || 0)}
-                          className="input"
-                        />
+                        <div>
+                          <label className="label text-sm">Percentage of dataset file to use</label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="0.01"
+                            value={alloc.percentage}
+                            onChange={(e) => updatePercentage(traitIndex, idx, parseFloat(e.target.value) || 0)}
+                            className="input"
+                          />
+                        </div>
+                        {dataset && (
+                          <div className="text-sm text-surface-400">
+                            {dataset.row_count} rows × {alloc.percentage}% = {rowsUsed} rows used
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -480,8 +713,7 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                       onChange={(e) => {
                         const datasetId = parseInt(e.target.value);
                         if (datasetId) {
-                          const remaining = 100 - total;
-                          addDatasetToTrait(traitIndex, datasetId, remaining > 0 ? remaining : 0);
+                          addDatasetToTrait(traitIndex, datasetId, 100);
                         }
                       }}
                     >
@@ -493,8 +725,8 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                       ))}
                     </select>
                   )}
-                  <div className={`text-sm font-semibold ${Math.abs(total - 100) < 0.01 ? 'text-green-400' : 'text-red-400'}`}>
-                    Total: {total.toFixed(2)}% {Math.abs(total - 100) < 0.01 ? '✓' : '(must equal 100%)'}
+                  <div className="text-sm font-semibold text-green-400">
+                    Total rows: {totalRows.toLocaleString()}
                   </div>
                 </div>
               );
@@ -507,7 +739,7 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
           <div className="space-y-4">
             <div className="flex items-center gap-2 mb-4">
               <Info className="h-5 w-5 text-primary-400" />
-              <h4 className="text-lg font-semibold">Output Directory</h4>
+              <h4 className="text-lg font-semibold">Output Directory & Model Validation</h4>
             </div>
             <p className="text-sm text-surface-400 mb-4">
               Specify where the trained model will be saved. The directory must be writable.
@@ -519,19 +751,30 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
               <input
                 type="text"
                 id="output_directory"
-                value={formData.output_directory}
+                value={formData.output_directory || ''}
                 onChange={(e) => {
                   setFormData({ ...formData, output_directory: e.target.value });
                   setOutputDirValid(null);
+                  setOutputDirManuallyEdited(true);
                 }}
-                onBlur={() => validateOutputDir(formData.output_directory || '')}
+                onBlur={() => {
+                  // Optional validation - doesn't block creation
+                  // Backend will create directory if it doesn't exist
+                  if (formData.output_directory) {
+                    validateOutputDir(formData.output_directory);
+                  }
+                }}
                 className="input"
-                placeholder={config?.output_directory_base || "/output/project-name"}
+                placeholder={config?.output_directory_base ? `${config.output_directory_base}/project-name` : "/output/project-name"}
                 required
               />
               {validatingDir && <p className="text-sm text-surface-400 mt-1">Validating...</p>}
               {outputDirValid === true && <p className="text-sm text-green-400 mt-1">✓ Directory is writable</p>}
-              {outputDirValid === false && <p className="text-sm text-red-400 mt-1">✗ Directory is not writable or doesn't exist</p>}
+              {outputDirValid === false && (
+                <p className="text-sm text-amber-400 mt-1">
+                  ⚠ Directory will be created automatically if it doesn't exist
+                </p>
+              )}
             </div>
           </div>
         )}

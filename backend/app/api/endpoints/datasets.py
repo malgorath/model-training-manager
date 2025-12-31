@@ -106,3 +106,19 @@ async def delete_dataset(
     if not success:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
+
+@router.post("/scan", status_code=200)
+async def scan_datasets(
+    service: DatasetService = Depends(get_dataset_service),
+) -> dict:
+    """
+    Scan the data directory structure and auto-add valid datasets to the database.
+    
+    Scans ./data/{author}/{datasetname}/ directories for CSV and JSON files,
+    validates them, and adds them to the database if they don't already exist.
+    
+    Returns a summary of the scan operation.
+    """
+    result = service.scan_datasets()
+    return result
+

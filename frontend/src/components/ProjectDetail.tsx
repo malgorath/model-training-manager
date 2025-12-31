@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, CheckCircle2, XCircle, Clock, Loader2, AlertCircle, Download } from 'lucide-react';
+import { ArrowLeft, Play, CheckCircle2, XCircle, Clock, Loader2, AlertCircle, Download, RotateCw, Gauge, StopCircle } from 'lucide-react';
 import { projectApi } from '../services/api';
 import type { ProjectStatus } from '../types';
 
@@ -19,14 +19,40 @@ export default function ProjectDetail() {
 
   const { data: project, isLoading } = useQuery({
     queryKey: ['projects', id],
-    queryFn: () => projectApi.get(parseInt(id!)),
+    queryFn: async () => {
+      if (!id) return null;
+      try {
+        const result = await projectApi.get(parseInt(id));
+        return result || null;
+      } catch (error) {
+        console.error('Error fetching project:', error);
+        return null;
+      }
+    },
     enabled: !!id,
+    retry: false,
   });
 
   const startMutation = useMutation({
     mutationFn: () => projectApi.start(parseInt(id!)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: () => projectApi.cancel(parseInt(id!)),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects', id] });
+    },
+  });
+
+  const retryMutation = useMutation({
+    mutationFn: () => projectApi.retry(parseInt(id!)),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects', id] });
     },
   });
 
@@ -46,6 +72,51 @@ export default function ProjectDetail() {
       </div>
     );
   }
+
+  // Calculate speed stats from project data
+  // Only calculate if project exists and has started_at
+  const calculateSpeedStats = (): {
+    elapsed: number;
+    progressPerSecond: number;
+    estimatedTotalTime: number;
+    estimatedRemainingTime: number;
+    samplesPerSecond: number | null;
+  } | null => {
+    // Double-check project exists (defensive programming)
+    if (!project) return null;
+    if (!project.started_at) return null;
+    
+    try {
+      const now = new Date();
+      const startTime = new Date(project.started_at);
+      const elapsed = (now.getTime() - startTime.getTime()) / 1000; // seconds
+      
+      if (elapsed <= 0 || project.progress <= 0) return null;
+      
+      // Calculate rates
+      const progressPerSecond = project.progress / elapsed;
+      const estimatedTotalTime = elapsed / (project.progress / 100);
+      const estimatedRemainingTime = estimatedTotalTime - elapsed;
+      
+      // Calculate samples per second (if we have epoch info)
+      // This is an approximation - actual calculation would need batch size and dataset size
+      const samplesPerSecond = progressPerSecond > 0 ? (progressPerSecond * 1000) : null; // Rough estimate
+      
+      return {
+        elapsed,
+        progressPerSecond,
+        estimatedTotalTime,
+        estimatedRemainingTime,
+        samplesPerSecond,
+      };
+    } catch (error) {
+      // If any error occurs, return null to prevent crashes
+      console.error('Error calculating speed stats:', error);
+      return null;
+    }
+  };
+
+  const speedStats = calculateSpeedStats();
 
   const statusInfo = statusConfig[project.status];
 
@@ -80,6 +151,26 @@ export default function ProjectDetail() {
                 Start Training
               </button>
             )}
+            {(project.status === 'running' || project.status === 'pending') && (
+              <button
+                onClick={() => cancelMutation.mutate()}
+                className="btn-secondary flex items-center gap-2 text-red-400 hover:text-red-300"
+                disabled={cancelMutation.isPending}
+              >
+                <StopCircle className="h-4 w-4" />
+                {cancelMutation.isPending ? 'Cancelling...' : 'Cancel'}
+              </button>
+            )}
+            {project.status === 'failed' && (
+              <button
+                onClick={() => retryMutation.mutate()}
+                className="btn-primary flex items-center gap-2"
+                disabled={retryMutation.isPending}
+              >
+                <RotateCw className="h-4 w-4" />
+                {retryMutation.isPending ? 'Retrying...' : 'Retry'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -96,7 +187,7 @@ export default function ProjectDetail() {
             </div>
             <div>
               <label className="label">Max Rows</label>
-              <p className="text-surface-300">{project.max_rows.toLocaleString()}</p>
+              <p className="text-surface-300">{project.max_rows != null ? project.max_rows.toLocaleString() : 'N/A'}</p>
             </div>
             <div>
               <label className="label">Output Directory</label>
@@ -117,7 +208,7 @@ export default function ProjectDetail() {
                   style={{ width: `${project.progress}%` }}
                 />
               </div>
-              {project.current_loss !== null && (
+              {project.current_loss != null && (
                 <p className="text-sm text-surface-400 mt-2">Loss: {project.current_loss.toFixed(4)}</p>
               )}
             </div>
@@ -168,6 +259,73 @@ export default function ProjectDetail() {
                     Validate Model
                   </button>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Speed Stats */}
+          {speedStats && (project.status === 'running' || project.status === 'completed') && (
+            <div>
+              <label className="label mb-2 flex items-center gap-2">
+                <Gauge className="h-4 w-4" />
+                Training Speed Stats
+              </label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="bg-surface-800/50 rounded-lg p-3 border border-surface-700">
+                  <p className="text-xs text-surface-400 mb-1">Elapsed Time</p>
+                  <p className="text-sm font-semibold text-white">
+                    {speedStats.elapsed >= 3600
+                      ? `${Math.floor(speedStats.elapsed / 3600)}h ${Math.floor((speedStats.elapsed % 3600) / 60)}m`
+                      : speedStats.elapsed >= 60
+                      ? `${Math.floor(speedStats.elapsed / 60)}m ${Math.floor(speedStats.elapsed % 60)}s`
+                      : `${Math.floor(speedStats.elapsed)}s`}
+                  </p>
+                </div>
+                <div className="bg-surface-800/50 rounded-lg p-3 border border-surface-700">
+                  <p className="text-xs text-surface-400 mb-1">Progress Rate</p>
+                  <p className="text-sm font-semibold text-white">
+                    {speedStats.progressPerSecond.toFixed(3)}%/s
+                  </p>
+                </div>
+                {project.status === 'running' && speedStats.estimatedRemainingTime > 0 && (
+                  <div className="bg-surface-800/50 rounded-lg p-3 border border-surface-700">
+                    <p className="text-xs text-surface-400 mb-1">Est. Remaining</p>
+                    <p className="text-sm font-semibold text-white">
+                      {speedStats.estimatedRemainingTime >= 3600
+                        ? `${Math.floor(speedStats.estimatedRemainingTime / 3600)}h ${Math.floor((speedStats.estimatedRemainingTime % 3600) / 60)}m`
+                        : speedStats.estimatedRemainingTime >= 60
+                        ? `${Math.floor(speedStats.estimatedRemainingTime / 60)}m ${Math.floor(speedStats.estimatedRemainingTime % 60)}s`
+                        : `${Math.floor(speedStats.estimatedRemainingTime)}s`}
+                    </p>
+                  </div>
+                )}
+                {project.status === 'completed' && project.completed_at && project.started_at && (
+                  <div className="bg-surface-800/50 rounded-lg p-3 border border-surface-700">
+                    <p className="text-xs text-surface-400 mb-1">Total Duration</p>
+                    <p className="text-sm font-semibold text-white">
+                      {(() => {
+                        const start = new Date(project.started_at);
+                        const end = new Date(project.completed_at!);
+                        const duration = (end.getTime() - start.getTime()) / 1000;
+                        if (duration >= 3600) {
+                          return `${Math.floor(duration / 3600)}h ${Math.floor((duration % 3600) / 60)}m`;
+                        } else if (duration >= 60) {
+                          return `${Math.floor(duration / 60)}m ${Math.floor(duration % 60)}s`;
+                        } else {
+                          return `${Math.floor(duration)}s`;
+                        }
+                      })()}
+                    </p>
+                  </div>
+                )}
+                {speedStats.samplesPerSecond && (
+                  <div className="bg-surface-800/50 rounded-lg p-3 border border-surface-700">
+                    <p className="text-xs text-surface-400 mb-1">Est. Samples/s</p>
+                    <p className="text-sm font-semibold text-white">
+                      {speedStats.samplesPerSecond.toFixed(1)}
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           )}

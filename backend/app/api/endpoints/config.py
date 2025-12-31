@@ -13,6 +13,7 @@ from app.schemas.training_config import (
     TrainingConfigResponse,
 )
 from app.services.training_service import TrainingService
+from app.services.gpu_service import GPUService
 
 router = APIRouter()
 
@@ -20,6 +21,11 @@ router = APIRouter()
 def get_training_service(db: Session = Depends(get_db)) -> TrainingService:
     """Dependency to get TrainingService instance."""
     return TrainingService(db)
+
+
+def get_gpu_service() -> GPUService:
+    """Dependency to get GPUService instance."""
+    return GPUService()
 
 
 @router.get("/", response_model=TrainingConfigResponse)
@@ -46,4 +52,16 @@ async def update_config(
     """
     config = service.update_config(update_data)
     return TrainingConfigResponse.model_validate(config)
+
+
+@router.get("/gpus")
+async def get_gpus(
+    gpu_service: GPUService = Depends(get_gpu_service),
+) -> list[dict]:
+    """
+    Get list of available GPUs.
+    
+    Returns information about all detected GPUs including ID, name, and memory.
+    """
+    return gpu_service.detect_gpus()
 

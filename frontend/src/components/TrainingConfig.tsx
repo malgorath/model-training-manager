@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Settings, Save, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { configApi } from '../services/api';
-import type { TrainingConfigUpdate, TrainingType, ModelProvider } from '../types';
+import type { TrainingConfigUpdate, TrainingType, GPUInfo } from '../types';
 
 /**
  * Training configuration component.
@@ -13,6 +13,11 @@ export default function TrainingConfig() {
   const { data: config, isLoading } = useQuery({
     queryKey: ['config'],
     queryFn: configApi.get,
+  });
+
+  const { data: gpus, isLoading: loadingGPUs } = useQuery({
+    queryKey: ['gpus'],
+    queryFn: configApi.getGPUs,
   });
 
   const [formData, setFormData] = useState<TrainingConfigUpdate>({});
@@ -31,10 +36,11 @@ export default function TrainingConfig() {
         default_lora_alpha: config.default_lora_alpha,
         default_lora_dropout: config.default_lora_dropout,
         auto_start_workers: config.auto_start_workers,
-        model_provider: config.model_provider,
-        model_api_url: config.model_api_url,
         output_directory_base: config.output_directory_base,
         model_cache_path: config.model_cache_path,
+        hf_token: config.hf_token,
+        selected_gpus: config.selected_gpus || undefined,
+        gpu_auto_detect: config.gpu_auto_detect ?? true,
       });
     }
   }, [config]);
@@ -164,56 +170,141 @@ export default function TrainingConfig() {
             </div>
           </div>
 
-          {/* Model API Settings */}
+          {/* GPU Selection */}
           <div>
             <h4 className="mb-4 text-sm font-medium uppercase tracking-wider text-surface-400">
-              Model API Settings
+              GPU Selection
             </h4>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-4">
               <div>
-                <label htmlFor="model_provider" className="label">
-                  Model Provider
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={formData.gpu_auto_detect ?? true}
+                    onChange={(e) => {
+                      updateField('gpu_auto_detect', e.target.checked);
+                      if (e.target.checked) {
+                        updateField('selected_gpus', undefined);
+                      }
+                    }}
+                    className="rounded border-surface-600 text-primary-500 focus:ring-primary-500"
+                  />
+                  <span className="label">Auto-detect GPUs</span>
                 </label>
-                <select
-                  id="model_provider"
-                  value={formData.model_provider ?? 'ollama'}
-                  onChange={(e) => {
-                    const provider = e.target.value as ModelProvider;
-                    updateField('model_provider', provider);
-                    // Update default URL when provider changes
-                    if (provider === 'ollama' && (!formData.model_api_url || formData.model_api_url.includes('1234'))) {
-                      updateField('model_api_url', 'http://localhost:11434');
-                    } else if (provider === 'lm_studio' && (!formData.model_api_url || formData.model_api_url.includes('11434'))) {
-                      updateField('model_api_url', 'http://localhost:1234');
-                    }
-                  }}
-                  className="input"
-                >
-                  <option value="ollama">Ollama</option>
-                  <option value="lm_studio">LM Studio</option>
-                </select>
+                <p className="mt-1 text-xs text-surface-500">
+                  Automatically detect and use all available GPUs
+                </p>
               </div>
+
+              {!formData.gpu_auto_detect && (
+                <div>
+                  <label className="label">Select GPUs</label>
+                  {loadingGPUs ? (
+                    <div className="text-sm text-surface-400">Loading GPUs...</div>
+                  ) : gpus && gpus.length > 0 ? (
+                    <div className="space-y-2">
+                      {gpus.map((gpu) => {
+                        const isSelected = formData.selected_gpus?.includes(gpu.id) ?? false;
+                        const formatMemory = (bytes?: number | null) => {
+                          if (!bytes) return 'Unknown';
+                          const gb = bytes / (1024 ** 3);
+                          return `${gb.toFixed(1)} GB`;
+                        };
+                        return (
+                          <label
+                            key={gpu.id}
+                            className="flex items-center gap-3 p-3 border border-surface-700 rounded-lg hover:bg-surface-800/50 cursor-pointer"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(e) => {
+                                const current = formData.selected_gpus || [];
+                                if (e.target.checked) {
+                                  updateField('selected_gpus', [...current, gpu.id]);
+                                } else {
+                                  updateField(
+                                    'selected_gpus',
+                                    current.filter((id) => id !== gpu.id)
+                                  );
+                                }
+                              }}
+                              className="rounded border-surface-600 text-primary-500 focus:ring-primary-500"
+                            />
+                            <div className="flex-1">
+                              <div className="font-medium text-white">
+                                GPU {gpu.id}: {gpu.name}
+                              </div>
+                              <div className="text-sm text-surface-400">
+                                Memory: {formatMemory(gpu.memory_total)}
+                                {gpu.memory_free && (
+                                  <span> (Free: {formatMemory(gpu.memory_free)})</span>
+                                )}
+                              </div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="p-4 border border-yellow-500/50 bg-yellow-500/10 rounded-lg">
+                      <div className="flex items-center gap-2 text-yellow-400">
+                        <AlertCircle className="h-5 w-5" />
+                        <span className="font-medium">No GPUs detected</span>
+                      </div>
+                      <p className="mt-1 text-sm text-yellow-300">
+                        No GPUs were detected. Training will use CPU. Ensure CUDA drivers are installed and PyTorch can detect GPUs.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {formData.gpu_auto_detect && gpus && gpus.length > 0 && (
+                <div className="p-3 bg-surface-800/50 rounded-lg">
+                  <p className="text-sm text-surface-400">
+                    Detected {gpus.length} GPU{gpus.length !== 1 ? 's' : ''}:{' '}
+                    {gpus.map((gpu) => `GPU ${gpu.id} (${gpu.name})`).join(', ')}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* HuggingFace Settings */}
+          <div>
+            <h4 className="mb-4 text-sm font-medium uppercase tracking-wider text-surface-400">
+              HuggingFace Settings
+            </h4>
+            <div className="space-y-4">
               <div>
-                <label htmlFor="model_api_url" className="label">
-                  Model API URL
+                <label htmlFor="hf_token" className="label">
+                  HuggingFace API Token
                 </label>
                 <input
-                  type="text"
-                  id="model_api_url"
-                  value={formData.model_api_url ?? (formData.model_provider === 'lm_studio' ? 'http://localhost:1234' : 'http://localhost:11434')}
-                  onChange={(e) => updateField('model_api_url', e.target.value)}
-                  placeholder={
-                    formData.model_provider === 'lm_studio'
-                      ? 'http://localhost:1234'
-                      : 'http://localhost:11434'
-                  }
+                  type="password"
+                  id="hf_token"
+                  value={formData.hf_token || ''}
+                  onChange={(e) => updateField('hf_token', e.target.value || null)}
+                  placeholder="hf_..."
                   className="input"
                 />
                 <p className="mt-1 text-xs text-surface-500">
-                  {formData.model_provider === 'lm_studio'
-                    ? 'LM Studio typically runs on port 1234'
-                    : 'Ollama typically runs on port 11434'}
+                  Your HuggingFace API token for downloading models. Get one at{' '}
+                  <a
+                    href="https://huggingface.co/settings/tokens"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary-400 hover:text-primary-300 underline"
+                  >
+                    huggingface.co/settings/tokens
+                  </a>
                 </p>
+                {config?.hf_token && (
+                  <p className="mt-1 text-xs text-surface-400">
+                    Current token: {config.hf_token} (masked for security)
+                  </p>
+                )}
               </div>
             </div>
           </div>

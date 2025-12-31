@@ -13,7 +13,7 @@ class DatasetAllocation(BaseModel):
     """Dataset allocation within a trait."""
     
     dataset_id: int = Field(..., description="Dataset ID")
-    percentage: float = Field(..., ge=0.0, le=100.0, description="Percentage of training data (0-100)")
+    percentage: float = Field(..., ge=0.0, le=100.0, description="Percentage of the dataset file to use (0-100). For example, 50% means use half of the dataset's rows.")
 
 
 class TraitConfiguration(BaseModel):
@@ -29,8 +29,9 @@ class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="Project name")
     description: Optional[str] = Field(None, description="Project description")
     base_model: str = Field(..., description="Base model identifier")
+    model_type: Optional[str] = Field(None, description="Model type (e.g., llama, mistral, etc.) - auto-detected from model")
     training_type: str = Field(..., description="Training type (qlora, unsloth, rag, standard)")
-    max_rows: int = Field(..., description="Maximum rows for training (50000, 100000, 250000, 500000, 1000000)")
+    max_rows: Optional[int] = Field(None, description="Maximum rows for training (deprecated, not used)")
     output_directory: str = Field(..., description="Output directory path for trained model")
     traits: List[TraitConfiguration] = Field(..., min_length=1, description="List of trait configurations")
     
@@ -64,8 +65,9 @@ class ProjectResponse(BaseModel):
     name: str
     description: Optional[str]
     base_model: str
+    model_type: Optional[str] = None
     training_type: str
-    max_rows: int
+    max_rows: Optional[int] = None
     output_directory: str
     status: str
     progress: float

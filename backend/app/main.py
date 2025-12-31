@@ -34,6 +34,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_db()
     settings.get_upload_path()  # Ensure upload directory exists
     
+    # Auto-start workers if configured
+    from app.core.database import SessionLocal
+    from app.services.training_service import TrainingService
+    from app.models.training_config import TrainingConfig
+    
+    db = SessionLocal()
+    try:
+        config = db.query(TrainingConfig).first()
+        if config and config.auto_start_workers:
+            logger = logging.getLogger(__name__)
+            logger.info("Auto-starting workers on startup (auto_start_workers=True)")
+            service = TrainingService(db=db)
+            # Start 1 worker by default (or use max_concurrent_workers if configured)
+            worker_count = min(1, config.max_concurrent_workers) if config.max_concurrent_workers > 0 else 1
+            try:
+                service.start_workers(worker_count)
+                logger.info(f"Auto-started {worker_count} worker(s) on startup")
+            except Exception as e:
+                logger.error(f"Failed to auto-start workers: {e}")
+    finally:
+        db.close()
+    
     yield
     
     # Shutdown

@@ -83,7 +83,23 @@ export default function SettingsPage() {
             </p>
             <div className="mt-4 rounded-lg bg-surface-800/50 p-4">
               <p className="text-xs text-surface-500">
-                Powered by Ollama • llama3.2:3b
+                Powered by{' '}
+                <a 
+                  href="http://scott-sanders.dev" 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="text-primary-400 hover:text-primary-300 underline"
+                >
+                  Scott Sanders
+                </a>
+                {' • '}
+                <a 
+                  href="/LICENSE" 
+                  target="_blank"
+                  className="text-surface-400 hover:text-surface-300 underline"
+                >
+                  MIT License
+                </a>
               </p>
             </div>
           </div>

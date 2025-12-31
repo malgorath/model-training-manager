@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, Play } from 'lucide-react';
 import JobMonitor from '../components/JobMonitor';
 import TrainingJobForm from '../components/TrainingJobForm';
@@ -9,8 +10,21 @@ import WorkerDashboard from '../components/WorkerDashboard';
  * Training jobs page component.
  */
 export default function TrainingJobsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(() => {
+    const jobIdParam = searchParams.get('jobId');
+    return jobIdParam ? parseInt(jobIdParam, 10) : null;
+  });
+
+  // Update URL when job is selected
+  useEffect(() => {
+    if (selectedJobId) {
+      setSearchParams({ jobId: selectedJobId.toString() });
+    } else {
+      setSearchParams({});
+    }
+  }, [selectedJobId, setSearchParams]);
 
   return (
     <div className="animate-fade-in">

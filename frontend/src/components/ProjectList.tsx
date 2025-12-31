@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { Play, Clock, CheckCircle2, XCircle, Loader2, AlertCircle } from 'lucide-react';
+import { Play, Clock, CheckCircle2, XCircle, Loader2, AlertCircle, Trash2, StopCircle } from 'lucide-react';
 import { projectApi } from '../services/api';
 import type { ProjectStatus } from '../types';
 
@@ -14,10 +14,41 @@ const statusConfig: Record<ProjectStatus, { icon: React.ReactNode; color: string
 
 export default function ProjectList() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({
     queryKey: ['projects', 1],
     queryFn: () => projectApi.list(1, 50),
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
   });
+
+  const deleteMutation = useMutation({
+    mutationFn: projectApi.delete,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+
+  const startMutation = useMutation({
+    mutationFn: projectApi.start,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: projectApi.cancel,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+
+  const handleDelete = (e: React.MouseEvent, projectId: number, projectName: string) => {
+    e.stopPropagation();
+    if (window.confirm(`Are you sure you want to delete project "${projectName}"? This action cannot be undone.`)) {
+      deleteMutation.mutate(projectId);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -67,7 +98,7 @@ export default function ProjectList() {
                     <div className="flex items-center gap-4 mt-2 text-sm text-surface-500">
                       <span>Model: {project.base_model}</span>
                       <span>Type: {project.training_type}</span>
-                      <span>Max Rows: {project.max_rows.toLocaleString()}</span>
+                      <span>Max Rows: {project.max_rows != null ? project.max_rows.toLocaleString() : 'N/A'}</span>
                       <span>Traits: {project.traits.length}</span>
                     </div>
                     {project.status === 'running' && (
@@ -88,18 +119,63 @@ export default function ProjectList() {
                       <p className="text-sm text-red-400 mt-2">{project.error_message}</p>
                     )}
                   </div>
-                  {project.status === 'pending' && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        projectApi.start(project.id);
-                      }}
-                      className="btn-primary flex items-center gap-2"
-                    >
-                      <Play className="h-4 w-4" />
-                      Start
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {project.status === 'pending' && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startMutation.mutate(project.id);
+                        }}
+                        disabled={startMutation.isPending}
+                        className="btn-primary flex items-center gap-2"
+                      >
+                        {startMutation.isPending ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Starting...
+                          </>
+                        ) : (
+                          <>
+                            <Play className="h-4 w-4" />
+                            Start
+                          </>
+                        )}
+                      </button>
+                    )}
+                    {(project.status === 'running' || project.status === 'pending') && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cancelMutation.mutate(project.id);
+                        }}
+                        disabled={cancelMutation.isPending}
+                        className="btn-secondary flex items-center gap-2 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                        title="Cancel project"
+                      >
+                        {cancelMutation.isPending ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Cancelling...
+                          </>
+                        ) : (
+                          <>
+                            <StopCircle className="h-4 w-4" />
+                            Cancel
+                          </>
+                        )}
+                      </button>
+                    )}
+                    {project.status !== 'running' && project.status !== 'pending' && (
+                      <button
+                        onClick={(e) => handleDelete(e, project.id, project.name)}
+                        disabled={deleteMutation.isPending}
+                        className="btn-secondary flex items-center gap-2 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                        title="Delete project"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             );

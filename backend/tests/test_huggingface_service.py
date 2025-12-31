@@ -19,7 +19,6 @@ class TestHuggingFaceService:
         """Test service initialization."""
         service = HuggingFaceService(timeout=60)
         assert service.timeout == 60
-        assert service.upload_dir.exists()
 
     @pytest.mark.asyncio
     async def test_search_datasets_success(self):
@@ -137,10 +136,9 @@ class TestHuggingFaceService:
             mock_load.return_value = mock_dataset
 
             with patch("app.services.huggingface_service.settings") as mock_settings:
-                mock_settings.upload_dir = str(tmp_path)
+                mock_settings.get_dataset_path.return_value = tmp_path / "test" / "dataset"
 
                 service = HuggingFaceService()
-                service.upload_dir = tmp_path
 
                 file_path, row_count, columns = service.download_dataset(
                     dataset_id="test/dataset",
@@ -151,7 +149,9 @@ class TestHuggingFaceService:
                 assert file_path.exists()
                 assert row_count == 100
                 assert columns == ["text", "label"]
-                assert "hf_test_dataset_train.json" in str(file_path)
+                assert "train.json" in str(file_path)
+                assert "test" in str(file_path)
+                assert "dataset" in str(file_path)
 
     def test_download_dataset_with_config(self, tmp_path):
         """Test dataset download with config."""
@@ -166,10 +166,9 @@ class TestHuggingFaceService:
             mock_load.return_value = mock_dataset
 
             with patch("app.services.huggingface_service.settings") as mock_settings:
-                mock_settings.upload_dir = str(tmp_path)
+                mock_settings.get_dataset_path.return_value = tmp_path / "test" / "dataset_en"
 
                 service = HuggingFaceService()
-                service.upload_dir = tmp_path
 
                 file_path, row_count, columns = service.download_dataset(
                     dataset_id="test/dataset",
@@ -180,7 +179,9 @@ class TestHuggingFaceService:
                 mock_load.assert_called_once_with(
                     "test/dataset", "en", split="test", trust_remote_code=True
                 )
-                assert "hf_test_dataset_en_test.json" in str(file_path)
+                assert "test.json" in str(file_path)
+                assert "test" in str(file_path)
+                assert "dataset_en" in str(file_path)
 
     def test_download_dataset_error(self, tmp_path):
         """Test dataset download with error."""
@@ -188,10 +189,9 @@ class TestHuggingFaceService:
             mock_load.side_effect = Exception("Dataset not found")
 
             with patch("app.services.huggingface_service.settings") as mock_settings:
-                mock_settings.upload_dir = str(tmp_path)
+                mock_settings.get_dataset_path.return_value = tmp_path / "huggingface" / "nonexistent_dataset"
 
                 service = HuggingFaceService()
-                service.upload_dir = tmp_path
 
                 with pytest.raises(ValueError, match="Failed to download dataset"):
                     service.download_dataset("nonexistent/dataset", "train")

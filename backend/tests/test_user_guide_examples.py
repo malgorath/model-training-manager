@@ -169,7 +169,7 @@ class TestModelPaths:
         assert "standard_model" in content
         
         # Check upload path mentioned
-        assert "uploads/models/job_" in content or "job_{id}" in content
+        assert "data/models/job_" in content or "job_{id}" in content
 
 
 class TestAPIDocumentation:

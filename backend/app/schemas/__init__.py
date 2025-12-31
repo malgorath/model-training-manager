@@ -27,6 +27,23 @@ from app.schemas.worker import (
     WorkerPoolStatus,
     WorkerCommand,
 )
+from app.schemas.project import (
+    ProjectCreate,
+    ProjectUpdate,
+    ProjectResponse,
+    ProjectListResponse,
+    OutputDirectoryValidationRequest,
+    OutputDirectoryValidationResponse,
+    ModelValidationRequest,
+    ModelValidationResponse,
+)
+from app.schemas.model import (
+    ModelSearchResponse,
+    HuggingFaceModelInfo,
+    ModelDownloadRequest,
+    ModelDownloadResponse,
+    LocalModelResponse,
+)
 
 __all__ = [
     # Dataset schemas
@@ -48,5 +65,20 @@ __all__ = [
     "WorkerInfo",
     "WorkerPoolStatus",
     "WorkerCommand",
+    # Project schemas
+    "ProjectCreate",
+    "ProjectUpdate",
+    "ProjectResponse",
+    "ProjectListResponse",
+    "OutputDirectoryValidationRequest",
+    "OutputDirectoryValidationResponse",
+    "ModelValidationRequest",
+    "ModelValidationResponse",
+    # Model schemas
+    "ModelSearchResponse",
+    "HuggingFaceModelInfo",
+    "ModelDownloadRequest",
+    "ModelDownloadResponse",
+    "LocalModelResponse",
 ]
 

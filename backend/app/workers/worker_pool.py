@@ -60,12 +60,13 @@ class WorkerPool:
         with self._lock:
             return len([w for w in self._workers.values() if w.status != "stopped"])
     
-    def start_workers(self, count: int) -> None:
+    def start_workers(self, count: int, selected_gpus: list[int] | None = None) -> None:
         """
         Start a specified number of workers.
         
         Args:
             count: Number of workers to start.
+            selected_gpus: Optional list of GPU IDs to assign to workers (round-robin assignment).
             
         Raises:
             ValueError: If count exceeds maximum workers.
@@ -78,15 +79,42 @@ class WorkerPool:
                     f"Current: {current_count}, Max: {self.max_workers}"
                 )
             
-            for _ in range(count):
+            # Assign GPUs to workers (round-robin if GPUs provided)
+            gpu_assignments = self._assign_gpus_to_workers(count, selected_gpus)
+            
+            for i in range(count):
                 worker = TrainingWorker(
                     db_session_factory=self._db_session_factory,
+                    gpu_id=gpu_assignments[i] if i < len(gpu_assignments) else None,
                 )
                 worker.start()
                 self._workers[worker.id] = worker
-                logger.info(f"WorkerPool: Started worker {worker.id}")
+                gpu_info = f" (GPU {worker.gpu_id})" if worker.gpu_id is not None else ""
+                logger.info(f"WorkerPool: Started worker {worker.id}{gpu_info}")
             
             self._is_running = True
+    
+    def _assign_gpus_to_workers(self, worker_count: int, selected_gpus: list[int] | None) -> list[int | None]:
+        """
+        Assign GPUs to workers using round-robin distribution.
+        
+        Args:
+            worker_count: Number of workers to assign GPUs to.
+            selected_gpus: List of GPU IDs to use (None or empty list means no GPU assignment).
+            
+        Returns:
+            List of GPU IDs (or None) assigned to each worker.
+        """
+        if not selected_gpus or len(selected_gpus) == 0:
+            return [None] * worker_count
+        
+        assignments = []
+        for i in range(worker_count):
+            # Round-robin assignment
+            gpu_index = i % len(selected_gpus)
+            assignments.append(selected_gpus[gpu_index])
+        
+        return assignments
     
     def stop_worker(self, worker_id: str) -> bool:
         """
@@ -155,32 +183,77 @@ class WorkerPool:
         self.distribute_queued_jobs()
         return True
     
+    def queue_project(self, project_id: int) -> bool:
+        """
+        Queue a project for processing.
+        
+        The project will be assigned to an idle worker or queued
+        if all workers are busy.
+        
+        Args:
+            project_id: Project ID.
+            
+        Returns:
+            True if project was queued, False if pool not running.
+        """
+        if not self._is_running:
+            return False
+        
+        with self._lock:
+            # Find an idle worker
+            for worker in self._workers.values():
+                if worker.status == "idle":
+                    if worker.add_project(project_id):
+                        logger.info(f"WorkerPool: Project {project_id} assigned to {worker.id}")
+                        return True
+            
+            # Queue the project if no idle workers
+            with self._queue_lock:
+                if project_id not in self._project_queue:
+                    self._project_queue.append(project_id)
+            logger.info(f"WorkerPool: Project {project_id} queued (no idle workers)")
+        
+        # Try to distribute queued projects (in case workers become available)
+        self.distribute_queued_projects()
+        return True
+    
     def cancel_job(self, job_id: int) -> bool:
         """
         Cancel a job.
         
+        Handles both jobs and projects (projects use their ID as job_id).
+        
         Args:
-            job_id: Training job ID to cancel.
+            job_id: Training job ID or Project ID to cancel.
             
         Returns:
-            True if job was cancelled, False if not found.
+            True if job was cancelled in pool, False if not found (but job should still be cancelled in DB).
         """
-        # Check if job is in queue
+        cancelled = False
+        
+        # Check if job is in job queue
         with self._queue_lock:
             if job_id in self._job_queue:
                 self._job_queue.remove(job_id)
-                logger.info(f"WorkerPool: Job {job_id} removed from queue")
-                return True
+                logger.info(f"WorkerPool: Job {job_id} removed from job queue")
+                cancelled = True
         
-        # Check if job is being processed
+        # Check if project is in project queue
+        with self._queue_lock:
+            if job_id in self._project_queue:
+                self._project_queue.remove(job_id)
+                logger.info(f"WorkerPool: Project {job_id} removed from project queue")
+                cancelled = True
+        
+        # Check if job is being processed by a worker
         with self._lock:
             for worker in self._workers.values():
                 if worker.current_job_id == job_id:
                     worker.cancel_current_job()
-                    logger.info(f"WorkerPool: Job {job_id} cancellation requested")
-                    return True
+                    logger.info(f"WorkerPool: Job {job_id} cancellation requested from worker {worker.id}")
+                    cancelled = True
         
-        return False
+        return cancelled
     
     def set_max_workers(self, max_workers: int) -> None:
         """

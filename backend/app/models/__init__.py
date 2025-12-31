@@ -14,6 +14,7 @@ from app.models.project import (
     TraitType,
     ProjectTraitDataset,
 )
+from app.models.downloaded_model import DownloadedModel
 
 __all__ = [
     "Dataset",
@@ -26,5 +27,6 @@ __all__ = [
     "ProjectTrait",
     "TraitType",
     "ProjectTraitDataset",
+    "DownloadedModel",
 ]
 

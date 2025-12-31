@@ -8,6 +8,7 @@ import {
   Loader2,
   ChevronLeft,
   ChevronRight,
+  RefreshCw,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { datasetApi } from '../services/api';
@@ -34,6 +35,13 @@ export default function DatasetList({ onSelect, selectedId }: DatasetListProps) 
   const deleteMutation = useMutation({
     mutationFn: datasetApi.delete,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['datasets'] }),
+  });
+
+  const scanMutation = useMutation({
+    mutationFn: datasetApi.scan,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['datasets'] });
+    },
   });
 
   const formatFileSize = (bytes: number): string => {
@@ -72,6 +80,22 @@ export default function DatasetList({ onSelect, selectedId }: DatasetListProps) 
 
   return (
     <div>
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-white">Datasets</h2>
+        <button
+          onClick={() => scanMutation.mutate()}
+          disabled={scanMutation.isPending}
+          className="btn-ghost flex items-center gap-2"
+          title="Scan directories and refresh dataset list"
+        >
+          {scanMutation.isPending ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <RefreshCw className="h-4 w-4" />
+          )}
+          Refresh
+        </button>
+      </div>
       <div className="overflow-hidden rounded-xl border border-surface-800">
         <table className="w-full">
           <thead>
