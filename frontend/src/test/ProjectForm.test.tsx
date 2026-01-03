@@ -54,6 +54,12 @@ vi.mock('../services/api', () => ({
     listAvailableModels: vi.fn().mockResolvedValue(['llama3.2:3b', 'meta-llama/Llama-3.2-3B-Instruct']),
     validateOutputDir: vi.fn().mockResolvedValue({ valid: true, writable: true }),
     validateModel: vi.fn().mockResolvedValue({ available: true }),
+    getModelTypes: vi.fn().mockResolvedValue({
+      model_type: 'llama',
+      available_types: ['llama', 'code_llama'],
+      recommended: 'llama',
+      model_name: 'llama3.2:3b',
+    }),
     create: vi.fn().mockResolvedValue({ id: 1, name: 'Test Project' }),
   },
 }));
