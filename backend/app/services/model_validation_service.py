@@ -54,7 +54,7 @@ class ModelValidationService:
         files_checked = []
         files_missing = []
         
-        path = Path(model_path)
+        path = Path(model_path).expanduser()
         
         if not path.exists():
             errors.append(f"Model path does not exist: {model_path}")
@@ -74,6 +74,13 @@ class ModelValidationService:
                 "errors": errors,
             }
         
+        # Check if this is a RAG model (has rag_config.json)
+        rag_config_file = path / "rag_config.json"
+        if rag_config_file.exists():
+            # Validate RAG model files
+            return self._validate_rag_model_files(path)
+        
+        # Standard transformers model validation
         # Check for config.json
         config_file = path / "config.json"
         files_checked.append("config.json")
@@ -117,6 +124,70 @@ class ModelValidationService:
             "errors": errors,
         }
     
+    def _validate_rag_model_files(self, path: Path) -> Dict[str, Any]:
+        """
+        Validate RAG model files.
+        
+        RAG models require:
+        - rag_config.json
+        - vector_index.faiss
+        - documents.json
+        - embeddings_metadata.json (optional)
+        
+        Args:
+            path: Path to the RAG model directory.
+            
+        Returns:
+            Dictionary with validation results.
+        """
+        errors: List[str] = []
+        files_checked = []
+        files_missing = []
+        
+        # Required RAG files
+        required_rag_files = {
+            "rag_config.json": "RAG configuration file",
+            "vector_index.faiss": "FAISS vector index",
+            "documents.json": "Document corpus",
+        }
+        
+        for filename, description in required_rag_files.items():
+            file_path = path / filename
+            files_checked.append(filename)
+            if not file_path.exists():
+                files_missing.append(filename)
+                errors.append(f"Missing required RAG file: {filename} ({description})")
+            else:
+                # Validate JSON files
+                if filename.endswith(".json"):
+                    try:
+                        with open(file_path, 'r') as f:
+                            json.load(f)
+                    except json.JSONDecodeError as e:
+                        errors.append(f"Invalid JSON in {filename}: {str(e)}")
+        
+        # Optional files
+        optional_files = ["embeddings_metadata.json"]
+        for filename in optional_files:
+            file_path = path / filename
+            if file_path.exists():
+                files_checked.append(filename)
+                if filename.endswith(".json"):
+                    try:
+                        with open(file_path, 'r') as f:
+                            json.load(f)
+                    except json.JSONDecodeError as e:
+                        errors.append(f"Invalid JSON in {filename}: {str(e)}")
+        
+        valid = len(errors) == 0
+        
+        return {
+            "valid": valid,
+            "files_checked": files_checked,
+            "files_missing": files_missing,
+            "errors": errors,
+        }
+    
     def validate_model_loading(self, model_path: str) -> Dict[str, Any]:
         """
         Validate that the model can be loaded successfully.
@@ -131,6 +202,15 @@ class ModelValidationService:
         """
         errors: List[str] = []
         
+        path = Path(model_path).expanduser()
+        
+        # Check if this is a RAG model (has rag_config.json)
+        rag_config_file = path / "rag_config.json"
+        if rag_config_file.exists():
+            # Validate RAG model loading (check FAISS index can be loaded)
+            return self._validate_rag_model_loading(path)
+        
+        # Standard transformers model validation
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
             
@@ -139,7 +219,7 @@ class ModelValidationService:
                 # Load config first to validate it
                 from transformers import AutoConfig
                 config = AutoConfig.from_pretrained(
-                    model_path,
+                    str(path),
                     trust_remote_code=True,
                 )
                 # Ensure config has model_type attribute
@@ -150,14 +230,14 @@ class ModelValidationService:
                         logger.warning(f"Config loaded as dict instead of Config object for {model_path}")
                         # Try to reload with proper config class
                         config = AutoConfig.from_pretrained(
-                            model_path,
+                            str(path),
                             trust_remote_code=True,
                             _from_auto=True,
                         )
                 
                 # Now load the model
                 model = AutoModelForCausalLM.from_pretrained(
-                    model_path,
+                    str(path),
                     trust_remote_code=True,
                     config=config,
                 )
@@ -172,7 +252,7 @@ class ModelValidationService:
             # Try to load the tokenizer
             try:
                 tokenizer = AutoTokenizer.from_pretrained(
-                    model_path,
+                    str(path),
                     trust_remote_code=True,
                 )
                 del tokenizer  # Free memory
@@ -186,6 +266,57 @@ class ModelValidationService:
             error_msg = "transformers library not available. Cannot validate model loading."
             errors.append(error_msg)
             logger.warning(error_msg)
+        
+        valid = len(errors) == 0
+        
+        return {
+            "valid": valid,
+            "errors": errors,
+        }
+    
+    def _validate_rag_model_loading(self, path: Path) -> Dict[str, Any]:
+        """
+        Validate RAG model loading (check FAISS index can be loaded).
+        
+        Args:
+            path: Path to the RAG model directory.
+            
+        Returns:
+            Dictionary with validation results.
+        """
+        errors: List[str] = []
+        
+        # Try to load FAISS index
+        try:
+            import faiss
+            index_path = path / "vector_index.faiss"
+            if index_path.exists():
+                index = faiss.read_index(str(index_path))
+                logger.info(f"Successfully loaded FAISS index from {index_path} ({index.ntotal} vectors)")
+                del index
+            else:
+                errors.append("FAISS index file not found: vector_index.faiss")
+        except ImportError:
+            errors.append("faiss library not available. Cannot validate FAISS index loading.")
+            logger.warning("faiss library not available")
+        except Exception as e:
+            error_msg = f"Failed to load FAISS index: {str(e)}"
+            errors.append(error_msg)
+            logger.error(error_msg)
+        
+        # Validate documents.json can be loaded
+        try:
+            documents_path = path / "documents.json"
+            if documents_path.exists():
+                with open(documents_path, 'r') as f:
+                    documents = json.load(f)
+                logger.info(f"Successfully loaded documents.json ({len(documents)} documents)")
+            else:
+                errors.append("documents.json not found")
+        except Exception as e:
+            error_msg = f"Failed to load documents.json: {str(e)}"
+            errors.append(error_msg)
+            logger.error(error_msg)
         
         valid = len(errors) == 0
         

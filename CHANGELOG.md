@@ -14,6 +14,19 @@ All notable changes to the Model Training Manager project.
   - Config is now protected immediately after model loading, preventing quantization from converting it to dict
   - File: `backend/app/workers/training_worker.py`
 
+- **RAG Training Fixes** (2026-01-03):
+  - Fixed missing RAG dependencies: Added `sentence-transformers>=2.7.0` and `faiss-cpu>=1.7.4` to `requirements.txt`
+  - Fixed RAG `model_path` None error: Set `project.model_path` before creating `ProjectWrapper` and before calling `_train_rag_real`
+  - Fixed RAG validation wrong directory: Validation now checks `output_dir/rag_model` instead of `output_dir` for RAG models
+  - Added RAG-specific model validation: `ModelValidationService` now detects RAG models by `rag_config.json` and validates RAG-specific files (FAISS index, documents.json)
+  - Added path expansion: All paths now use `.expanduser()` to handle `~` in paths
+  - Files: `backend/app/workers/training_worker.py`, `backend/app/services/model_validation_service.py`, `backend/requirements.txt`
+
+- **Form Validation Fixes** (2026-01-03):
+  - Fixed stale closure bug in ProjectForm: Changed `setFormData({ ...formData, ... })` to functional update pattern `setFormData(prev => ({ ...prev, ... }))`
+  - Fixed model type auto-selection not persisting when form data was updated
+  - Files: `frontend/src/components/ProjectForm.tsx`
+
 ### Added
 - **Comprehensive Test Suite**: Created complete test coverage for all API endpoints, button clicks, and autofill fields
   - `test_all_api_endpoints.py`: Tests for all 41+ API endpoints

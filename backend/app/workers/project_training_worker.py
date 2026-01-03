@@ -93,7 +93,7 @@ def process_project(worker: TrainingWorker, project_id: int, db: Session) -> Non
         worker._append_log(project, f"✅ Total training data: {len(all_data)} rows", db)
         
         # Determine output directory
-        output_dir = Path(project.output_directory)
+        output_dir = Path(project.output_directory).expanduser()
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Train based on training type
@@ -108,12 +108,27 @@ def process_project(worker: TrainingWorker, project_id: int, db: Session) -> Non
         
         # Validate trained model
         worker._append_log(project, "🔍 Validating trained model...", db)
-        validation_result = validation_service.validate_model_complete(str(output_dir))
+        # Ensure model_path is committed to database before validation
+        db.commit()  # Commit to ensure model_path is saved
+        db.refresh(project)  # Refresh to get latest model_path
+        
+        # For RAG models, validate the model_path (rag_model subdirectory), not output_dir
+        # For other models, model_path might be set to output_dir or a subdirectory
+        if project.training_type == "rag":
+            # For RAG, always use the rag_model subdirectory
+            validation_path = str(output_dir / "rag_model")
+        else:
+            validation_path = project.model_path if project.model_path else str(output_dir)
+        
+        worker._append_log(project, f"🔍 Validating model at: {validation_path}", db)
+        validation_result = validation_service.validate_model_complete(validation_path)
         
         if validation_result["valid"]:
             project.status = ProjectStatus.COMPLETED.value
             project.progress = 100.0
-            project.model_path = str(output_dir)
+            # Don't overwrite model_path if it's already set (e.g., for RAG models)
+            if not project.model_path:
+                project.model_path = str(output_dir)
             worker._append_log(project, "✅ Model validation passed!", db)
             worker._append_log(project, "✅ Project training completed successfully!", db)
         else:
@@ -212,14 +227,16 @@ def _train_rag_for_project(
     """Train RAG for a project."""
     worker._append_log(project, "🚀 Starting RAG training...", db)
     
+    # Set model_path before calling _train_rag_real (it needs job.model_path)
+    project.model_path = str(output_dir / "rag_model")
+    db.flush()  # Ensure model_path is persisted before training
+    
     worker._train_rag_real(
         job=project,
         data=data,
         output_dir=output_dir,
         db=db,
     )
-    
-    project.model_path = str(output_dir / "rag_model")
 
 
 def _train_standard_for_project(

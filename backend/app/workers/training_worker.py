@@ -485,8 +485,14 @@ class TrainingWorker:
             self._append_log(project, f"✅ Total training data: {len(all_data)} rows", db)
             
             # Determine output directory
-            output_dir = Path(project.output_directory)
+            output_dir = Path(project.output_directory).expanduser()
             output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Set model_path for RAG training BEFORE creating ProjectWrapper (it needs job.model_path)
+            if project.training_type == "rag":
+                project.model_path = str(output_dir / "rag_model")
+                # Ensure it's set on the project object
+                db.flush()
             
             # Create a project wrapper that provides TrainingJob-like interface
             class ProjectWrapper:
@@ -544,7 +550,6 @@ class TrainingWorker:
                 project.model_path = str(output_dir / "lora_model")
             elif project.training_type == "rag":
                 self._train_rag_real(project_wrapper, all_data, output_dir, db)
-                project.model_path = str(output_dir / "rag_model")
             else:
                 self._train_standard_real(project_wrapper, all_data, output_dir, db, resolved_model_path)
                 project.model_path = str(output_dir / "standard_model")
@@ -556,7 +561,13 @@ class TrainingWorker:
             else:
                 # Validate trained model
                 self._append_log(project, "🔍 Validating trained model...", db)
-                validation_result = validation_service.validate_model_complete(str(output_dir))
+                # For RAG models, validate the model_path (rag_model subdirectory), not output_dir
+                if project.training_type == "rag":
+                    validation_path = str(output_dir / "rag_model")
+                else:
+                    validation_path = project.model_path if project.model_path else str(output_dir)
+                self._append_log(project, f"🔍 Validating at: {validation_path}", db)
+                validation_result = validation_service.validate_model_complete(validation_path)
                 
                 if validation_result["valid"]:
                     project.status = ProjectStatus.COMPLETED.value
@@ -1479,7 +1490,10 @@ class TrainingWorker:
         import faiss
         import numpy as np
         
-        model_dir = Path(job.model_path)
+        if not job.model_path:
+            raise ValueError(f"job.model_path is None - cannot save RAG model. Job: {job.id}, Type: {type(job)}")
+        
+        model_dir = Path(job.model_path).expanduser()
         model_dir.mkdir(parents=True, exist_ok=True)
         
         # Stage 1: Build embeddings

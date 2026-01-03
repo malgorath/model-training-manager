@@ -25,6 +25,8 @@ accelerate>=1.0.0
 unsloth>=2024.11
 trl>=0.11.0
 huggingface_hub>=0.24.0
+sentence-transformers>=2.7.0
+faiss-cpu>=1.7.4
 
 # Testing
 pytest>=8.3.0

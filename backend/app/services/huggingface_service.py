@@ -304,10 +304,16 @@ class HuggingFaceService:
                 
                 models = response.json()
                 
-                # Format results
+                # Format results and filter out GGUF models
                 results = []
                 for model in models:
                     model_id = model.get("id", "")
+                    tags = model.get("tags", [])
+                    
+                    # Filter out GGUF models - check if "gguf" is in tags (case-insensitive)
+                    if any("gguf" in str(tag).lower() for tag in tags):
+                        continue
+                    
                     parts = model_id.split("/") if "/" in model_id else ["", model_id]
                     results.append({
                         "id": model_id,
@@ -316,7 +322,7 @@ class HuggingFaceService:
                         "description": model.get("description", ""),
                         "downloads": model.get("downloads", 0),
                         "likes": model.get("likes", 0),
-                        "tags": model.get("tags", []),
+                        "tags": tags,
                         "model_type": model.get("pipeline_tag", ""),
                         "private": model.get("private", False),
                         "last_modified": model.get("lastModified", ""),

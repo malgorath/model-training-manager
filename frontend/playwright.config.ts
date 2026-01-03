@@ -12,7 +12,7 @@ export default defineConfig({
   workers: 1, // Run one test at a time
   reporter: 'html',
   use: {
-    baseURL: 'http://localhost:3001',
+    baseURL: 'http://localhost:3000',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -26,8 +26,8 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: 'echo "Frontend should be running on http://localhost:3001"',
-    url: 'http://localhost:3001',
+    command: 'echo "Frontend should be running on http://localhost:3000"',
+    url: 'http://localhost:3000',
     reuseExistingServer: true, // Don't start server, assume it's running
     timeout: 120 * 1000,
   },

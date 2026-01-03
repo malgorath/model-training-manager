@@ -87,11 +87,14 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
         .then((data) => {
           setModelTypes(data);
           // Auto-set recommended model_type if available
-          if (data.recommended && !formData.model_type) {
+          if (data.recommended) {
             setFormData(prev => ({ ...prev, model_type: data.recommended || undefined }));
-          } else if (data.model_type && !formData.model_type) {
+          } else if (data.model_type) {
             // Fallback to detected model_type if recommended not available
             setFormData(prev => ({ ...prev, model_type: data.model_type || undefined }));
+          } else if (data.available_types && data.available_types.length > 0) {
+            // Fallback to first available type if neither recommended nor detected
+            setFormData(prev => ({ ...prev, model_type: data.available_types[0] || undefined }));
           }
         })
         .catch((err) => {
@@ -238,7 +241,8 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
 
   const canProceedToNext = () => {
     if (step === 1) {
-      return formData.name && formData.base_model && formData.training_type && formData.model_type && modelValid === true;
+      // Basic validation - model_type will be set in onClick handler if needed
+      return formData.name && formData.base_model && formData.training_type && modelValid === true;
     }
     if (step === 2) {
       const reasoningTrait = traits.find(t => t.trait_type === 'reasoning');
@@ -263,11 +267,16 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Ensure model_type is set before submission (workaround for browser automation)
+    let finalModelType = formData.model_type;
+    if (!finalModelType && modelTypes) {
+      finalModelType = modelTypes.recommended || modelTypes.model_type || (modelTypes.available_types && modelTypes.available_types[0]);
+    }
     const projectData: ProjectCreate = {
       name: formData.name!,
       description: formData.description,
       base_model: formData.base_model!,
-      model_type: formData.model_type,
+      model_type: finalModelType,
       training_type: formData.training_type as TrainingType,
       output_directory: formData.output_directory!,
       traits: traits.map(t => ({
@@ -348,7 +357,7 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
               <textarea
                 id="description"
                 value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
                 className="input"
                 rows={3}
               />
@@ -370,7 +379,7 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                   value={formData.base_model}
                   onChange={(e) => {
                     const selectedModel = e.target.value;
-                    setFormData({ ...formData, base_model: selectedModel });
+                    setFormData(prev => ({ ...prev, base_model: selectedModel }));
                     // Auto-validate if model is in available list
                     if (selectedModel && availableModels && availableModels.includes(selectedModel)) {
                       setModelValid(true);
@@ -421,7 +430,7 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                   <select
                     id="model_type"
                     value={formData.model_type || ''}
-                    onChange={(e) => setFormData({ ...formData, model_type: e.target.value })}
+                    onChange={(e) => setFormData(prev => ({ ...prev, model_type: e.target.value }))}
                     className="input"
                     required
                     disabled={!modelTypes?.available_types?.length}
@@ -454,7 +463,7 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                 <select
                   id="training_type"
                   value={formData.training_type}
-                  onChange={(e) => setFormData({ ...formData, training_type: e.target.value as TrainingType })}
+                  onChange={(e) => setFormData(prev => ({ ...prev, training_type: e.target.value as TrainingType }))}
                   className="input"
                   required
                 >
@@ -753,7 +762,7 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
                 id="output_directory"
                 value={formData.output_directory || ''}
                 onChange={(e) => {
-                  setFormData({ ...formData, output_directory: e.target.value });
+                  setFormData(prev => ({ ...prev, output_directory: e.target.value }));
                   setOutputDirValid(null);
                   setOutputDirManuallyEdited(true);
                 }}
@@ -801,9 +810,26 @@ export default function ProjectForm({ onSuccess, onClose }: ProjectFormProps) {
           {step < 5 ? (
             <button
               type="button"
-              onClick={() => setStep(step + 1)}
+              onClick={() => {
+                // Ensure model_type is set before advancing (workaround for browser automation)
+                if (step === 1) {
+                  // Set model_type if available but not set
+                  if (!formData.model_type && modelTypes) {
+                    const modelTypeToSet = modelTypes.recommended || modelTypes.model_type || (modelTypes.available_types && modelTypes.available_types[0]);
+                    if (modelTypeToSet) {
+                      setFormData(prev => ({ ...prev, model_type: modelTypeToSet }));
+                    }
+                  }
+                  // Validate basic fields before advancing
+                  if (formData.name && formData.base_model && formData.training_type && modelValid) {
+                    setStep(step + 1);
+                  }
+                  return;
+                }
+                setStep(step + 1);
+              }}
               className="btn-primary"
-              disabled={!canProceedToNext()}
+              disabled={step === 1 ? (!formData.name || !formData.base_model || !formData.training_type || !modelValid) : !canProceedToNext()}
             >
               Next
             </button>
