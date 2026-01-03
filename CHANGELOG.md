@@ -4,6 +4,16 @@ All notable changes to the Model Training Manager project.
 
 ## [Unreleased]
 
+### Fixed
+- **QLoRA Dict Config Error**: Fixed critical issue where QLoRA training failed with `'dict' object has no attribute 'model_type'` error
+  - Implemented config protection mechanism using property descriptor to intercept and prevent dict conversion during quantization
+  - Added 8-bit quantization fallback before falling back to no quantization
+  - Added library version logging for debugging (transformers, bitsandbytes, peft, torch)
+  - Fixed syntax error in `_train_qlora_real()` method (line 726)
+  - Consolidated error handling and removed redundant config fix attempts
+  - Config is now protected immediately after model loading, preventing quantization from converting it to dict
+  - File: `backend/app/workers/training_worker.py`
+
 ### Added
 - **Comprehensive Test Suite**: Created complete test coverage for all API endpoints, button clicks, and autofill fields
   - `test_all_api_endpoints.py`: Tests for all 41+ API endpoints

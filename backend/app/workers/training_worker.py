@@ -667,6 +667,68 @@ class TrainingWorker:
         
         self._train_qlora_real(job, dataset, data, output_dir, db, resolved_path)
     
+    def _protect_model_config(self, model, protected_config):
+        """
+        Protect model.config from being converted to dict by storing protected config on instance
+        and installing a property that intercepts access.
+        
+        This intercepts both get and set operations on model.config, ensuring it's always
+        a Config object, not a dict. If quantization tries to set it to a dict, we immediately
+        restore the Config object.
+        
+        Args:
+            model: The model object to protect
+            protected_config: The Config object to always use
+        """
+        # Store the protected config on the instance itself
+        model._protected_config = protected_config
+        
+        # Create a property descriptor that protects the config
+        class ConfigProperty:
+            """Property descriptor that protects config from being set to dict."""
+            def __get__(self, obj, objtype=None):
+                if obj is None:
+                    return self
+                # Get the protected config from the instance
+                protected = getattr(obj, '_protected_config', None)
+                if protected is None:
+                    # Fallback to whatever is in __dict__
+                    return obj.__dict__.get('config', None)
+                
+                # Check if config exists in __dict__ and if it's a dict
+                if 'config' in obj.__dict__:
+                    config = obj.__dict__['config']
+                    if isinstance(config, dict):
+                        # Immediately restore the Config object
+                        obj.__dict__['config'] = protected
+                        return protected
+                    return config
+                # If not in __dict__, return the protected config
+                return protected
+            
+            def __set__(self, obj, value):
+                protected = getattr(obj, '_protected_config', None)
+                # If someone tries to set a dict, replace it with our Config object
+                if isinstance(value, dict) and protected is not None:
+                    obj.__dict__['config'] = protected
+                else:
+                    obj.__dict__['config'] = value
+                    # Update protected config if a new valid config is set
+                    if not isinstance(value, dict) and hasattr(value, 'model_type'):
+                        obj._protected_config = value
+        
+        # Remove config from __dict__ if it exists (so property takes precedence)
+        if 'config' in model.__dict__:
+            del model.__dict__['config']
+        
+        # Install the property on the model's class
+        # Each model instance will share the same property, but each has its own _protected_config
+        type(model).config = ConfigProperty()
+        
+        # Verify it works
+        if isinstance(model.config, dict):
+            raise RuntimeError("Config protection failed - config is still a dict")
+    
     def _train_qlora_real(
         self,
         job: Union[TrainingJob, Project],
@@ -701,6 +763,28 @@ class TrainingWorker:
         from trl import SFTTrainer
         from datasets import Dataset as HFDataset
         
+        # Log library versions for debugging
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['pip', 'list'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                lines = result.stdout.split('\n')
+                versions = []
+                for lib in ['transformers', 'bitsandbytes', 'peft', 'torch']:
+                    for line in lines:
+                        if line.startswith(lib):
+                            versions.append(line.strip())
+                            break
+                if versions:
+                    self._append_log(job, f"📚 Library versions: {', '.join(versions)}", db)
+        except Exception:
+            pass  # Non-critical, continue if version check fails
+        
         self._append_log(job, "📦 Loading model with 4-bit quantization...", db)
         self._append_log(job, f"📦 Using model from: {model_path}", db)
         
@@ -721,273 +805,177 @@ class TrainingWorker:
             except Exception:
                 pass
         
-        # Load model and tokenizer from resolved path
-        # CRITICAL: Wrap entire model loading in try-except to catch dict config errors
-git 
-                # Load config using the specific config class - this ensures it's NEVER a dict
-                config = config_class.from_pretrained(
-                    model_path,
-                    trust_remote_code=True,
-                )
-                # Final validation: config MUST be a Config object, not dict
-                if isinstance(config, dict):
-                    raise ValueError(f"Config loaded as dict even with {config_class}. This should never happen.")
-                if not hasattr(config, 'model_type'):
-                    raise ValueError(f"Config object missing model_type attribute. Type: {type(config)}")
-                self._append_log(job, f"✅ Config loaded as {type(config).__name__} with model_type={config.model_type}", db)
-            
-            # Load model with quantization
-            # CRITICAL: Quantization may convert config to dict, so we load WITHOUT config param
-            # then immediately fix it before any operations
-            self._append_log(job, f"📦 Loading model with quantization (will fix config immediately after)...", db)
+        # Load config first - CRITICAL: Must be a Config object, never a dict
+        from transformers import AutoConfig, CONFIG_MAPPING
+        import json as json_module
+        
+        # Read config.json directly to get model_type FIRST
+        config_path = Path(model_path) / "config.json"
+        model_type = None
+        
+        # Try to get model_type from project first
+        if hasattr(job, '_project') and hasattr(job._project, 'model_type') and job._project.model_type:
+            model_type = job._project.model_type
+            self._append_log(job, f"📋 Using model_type from project: {model_type}", db)
+        
+        # Fallback to reading from config.json
+        if not model_type and config_path.exists():
             try:
-                # Load WITHOUT config parameter to avoid quantization dict issue
-                # We'll fix config immediately after loading
-                model = AutoModelForCausalLM.from_pretrained(
-                    model_path,
-                    quantization_config=bnb_config,
-                    device_map="auto",
-                    trust_remote_code=True,
-                    # DO NOT pass config here - quantization will convert it to dict
-                )
-                # IMMEDIATELY fix config before ANY other operation
-                # This must happen before tokenizer loading or any other access
-                model.config = config
-                # Verify it's set correctly
-                if isinstance(model.config, dict):
-                    raise RuntimeError(f"Failed to set model.config - still a dict. Type: {type(model.config)}")
-                if not hasattr(model.config, 'model_type'):
-                    raise RuntimeError(f"model.config missing model_type after fix. Type: {type(model.config)}")
-                self._append_log(job, f"✅ Model loaded, config fixed immediately: {type(model.config).__name__} with model_type={model.config.model_type}", db)
-            except Exception as load_error:
-                error_str = str(load_error)
-                if "'dict' object has no attribute 'model_type'" in error_str or ("model_type" in error_str.lower() and "dict" in error_str.lower()):
-                    # Even loading without config failed - try without quantization
-                    self._append_log(job, f"⚠️ Quantized load failed with dict config, trying without quantization...", db)
-                    try:
-                        # Load model without quantization
-                        model = AutoModelForCausalLM.from_pretrained(
-                            model_path,
-                            device_map="auto",
-                            trust_remote_code=True,
-                        )
-                        # IMMEDIATELY fix config
-                        model.config = config
-                        if isinstance(model.config, dict) or not hasattr(model.config, 'model_type'):
-                            raise RuntimeError(f"Failed to fix config. Type: {type(model.config)}")
-                        self._append_log(job, f"✅ Model loaded without quantization, config fixed", db)
-                        # Note: Model is not quantized but will work
-                    except Exception as alt_error:
-                        error_msg = f"Failed to load model even without quantization: {str(alt_error)}"
-                        self._append_log(job, f"❌ {error_msg}", db)
-                        raise RuntimeError(error_msg) from alt_error
-                else:
-                    raise
-            
-            tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            
-            # CRITICAL: Immediately check and fix model.config - quantization loading might have set it to dict
-            # This MUST happen before ANY operation that accesses model.config.model_type
-            if not hasattr(model, 'config') or isinstance(model.config, dict):
-                self._append_log(job, f"⚠️ Model config is missing or dict after loading, fixing...", db)
-                # Use the config we prepared earlier
-                model.config = config
-                # Verify it's set correctly
-                if isinstance(model.config, dict):
-                    raise RuntimeError("Failed to set model.config to Config object - still a dict")
-            
-            # Verify model.config.model_type is accessible BEFORE any operations
-            if not hasattr(model.config, 'model_type'):
-                self._append_log(job, f"⚠️ model.config.model_type not accessible, forcing config...", db)
-                model.config = config
-                if not hasattr(model.config, 'model_type'):
-                    raise RuntimeError(f"model.config.model_type still not accessible after fix. Config type: {type(model.config)}")
-            
-            # Final verification: model.config.model_type must be accessible
-            try:
-                _ = model.config.model_type
-            except (AttributeError, TypeError) as e:
-                self._append_log(job, f"⚠️ model.config.model_type not accessible: {e}, fixing...", db)
-                # Reload config properly
-                config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-                if isinstance(config, dict):
-                    # Read model_type from dict and use CONFIG_MAPPING
-                    model_type = config.get('model_type')
-                    if model_type:
-                        from transformers import CONFIG_MAPPING
-                        # Use direct access instead of .get() as CONFIG_MAPPING is a _LazyConfigMapping
-                        config_class = CONFIG_MAPPING[model_type] if model_type in CONFIG_MAPPING else None
-                        if config_class:
-                            config = config_class.from_pretrained(model_path, trust_remote_code=True)
-                        else:
-                            raise RuntimeError(f"Unknown model_type: {model_type}")
-                    else:
-                        raise RuntimeError("Could not determine model_type from config dict")
-                # Force set config
-                model.config = config
-                # Verify
-                if not hasattr(model.config, 'model_type'):
-                    raise RuntimeError(f"Failed to fix model.config - still no model_type. Config type: {type(model.config)}")
-        except Exception as e:
-            error_str = str(e)
-            # Check if this is the dict config error - if so, try to fix it
-            if "'dict' object has no attribute 'model_type'" in error_str or ("model_type" in error_str.lower() and "dict" in error_str.lower()):
-                self._append_log(job, f"⚠️ Caught dict config error: {error_str[:150]}, attempting fix...", db)
-                try:
-                    # Reload model without config parameter, then fix config
-                    from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, CONFIG_MAPPING
-                    import json as json_module
-                    
-                    model = AutoModelForCausalLM.from_pretrained(
-                        model_path,
-                        quantization_config=bnb_config,
-                        device_map="auto",
-                        trust_remote_code=True,
-                    )
-                    # Load config properly
-                    config_path = Path(model_path) / "config.json"
-                    config_dict = json_module.load(open(config_path))
+                with open(config_path, 'r') as f:
+                    config_dict = json_module.load(f)
                     model_type = config_dict.get('model_type')
-                    if model_type:
-                        # Use direct access instead of .get() as CONFIG_MAPPING is a _LazyConfigMapping
-                        config_class = CONFIG_MAPPING[model_type] if model_type in CONFIG_MAPPING else None
-                        if config_class:
-                            config = config_class.from_pretrained(model_path, trust_remote_code=True)
-                        else:
-                            config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-                    else:
-                        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-                    
-                    # Fix model.config
-                    model.config = config
-                    if isinstance(model.config, dict) or not hasattr(model.config, 'model_type'):
-                        raise RuntimeError(f"Failed to fix model.config. Type: {type(model.config)}")
-                    
-                    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-                    if tokenizer.pad_token is None:
-                        tokenizer.pad_token = tokenizer.eos_token
-                    
-                    self._append_log(job, f"✅ Model and config fixed successfully", db)
-                    # Continue execution - model and tokenizer are now loaded
-                except Exception as fix_error:
-                    error_msg = f"Failed to load model from {model_path}: {str(e)} (fix failed: {str(fix_error)})"
-                    self._append_log(job, f"❌ {error_msg}", db)
-                    raise RuntimeError(error_msg) from e
-            else:
-                error_msg = f"Failed to load model from {model_path}: {str(e)}"
+                    if not model_type:
+                        raise ValueError(f"config.json missing 'model_type' key")
+            except Exception as e:
+                error_msg = f"Failed to read model_type from config.json: {str(e)}"
                 self._append_log(job, f"❌ {error_msg}", db)
                 raise RuntimeError(error_msg) from e
         
-        # Final check: ensure config is not a dict before proceeding
-        if hasattr(model, 'config') and isinstance(model.config, dict):
-            error_msg = f"Model config is still a dict after loading. Cannot proceed with training."
+        if not model_type:
+            raise ValueError("Could not determine model_type from project or config.json")
+        
+        # Use CONFIG_MAPPING to get the specific config class
+        # Note: Use direct access instead of .get() as CONFIG_MAPPING is a _LazyConfigMapping that doesn't support .get()
+        config_class = CONFIG_MAPPING[model_type] if model_type in CONFIG_MAPPING else None
+        if not config_class:
+            # Fallback: use AutoConfig which should handle it
+            self._append_log(job, f"⚠️ model_type '{model_type}' not in CONFIG_MAPPING, using AutoConfig...", db)
+            config = AutoConfig.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+            )
+            if isinstance(config, dict):
+                raise ValueError(f"AutoConfig returned dict for model_type '{model_type}'. This should not happen.")
+            if not hasattr(config, 'model_type'):
+                raise ValueError(f"Config missing model_type attribute. Type: {type(config)}")
+            self._append_log(job, f"✅ Config loaded as {type(config).__name__} with model_type={config.model_type}", db)
+        else:
+            # Load config using the specific config class - this ensures it's NEVER a dict
+            config = config_class.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+            )
+            # Final validation: config MUST be a Config object, not dict
+            if isinstance(config, dict):
+                raise ValueError(f"Config loaded as dict even with {config_class}. This should never happen.")
+            if not hasattr(config, 'model_type'):
+                raise ValueError(f"Config object missing model_type attribute. Type: {type(config)}")
+            self._append_log(job, f"✅ Config loaded as {type(config).__name__} with model_type={config.model_type}", db)
+        
+        # Load model with quantization - use config protection to prevent dict conversion
+        self._append_log(job, f"📦 Loading model with 4-bit quantization (with config protection)...", db)
+        model = None
+        tokenizer = None
+        
+        try:
+            # Load WITHOUT config parameter to avoid quantization dict issue
+            # We'll protect and fix config immediately after loading
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                quantization_config=bnb_config,
+                device_map="auto",
+                trust_remote_code=True,
+                # DO NOT pass config here - quantization will convert it to dict
+            )
+            # IMMEDIATELY protect config before ANY other operation
+            # This must happen before tokenizer loading or any other access
+            self._protect_model_config(model, config)
+            # Verify it's set correctly
+            if isinstance(model.config, dict):
+                raise RuntimeError(f"Failed to protect model.config - still a dict. Type: {type(model.config)}")
+            if not hasattr(model.config, 'model_type'):
+                raise RuntimeError(f"model.config missing model_type after protection. Type: {type(model.config)}")
+            self._append_log(job, f"✅ Model loaded with 4-bit quantization, config protected: {type(model.config).__name__} with model_type={model.config.model_type}", db)
+        except Exception as load_error:
+            error_str = str(load_error)
+            if "'dict' object has no attribute 'model_type'" in error_str or ("model_type" in error_str.lower() and "dict" in error_str.lower()):
+                # 4-bit quantization failed - try 8-bit quantization
+                self._append_log(job, f"⚠️ 4-bit quantization failed with dict config, trying 8-bit quantization...", db)
+                try:
+                    # Configure 8-bit quantization
+                    bnb_config_8bit = BitsAndBytesConfig(
+                        load_in_8bit=True,
+                    )
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_path,
+                        quantization_config=bnb_config_8bit,
+                        device_map="auto",
+                        trust_remote_code=True,
+                    )
+                    # Protect config immediately
+                    self._protect_model_config(model, config)
+                    if isinstance(model.config, dict) or not hasattr(model.config, 'model_type'):
+                        raise RuntimeError(f"Failed to protect config with 8-bit. Type: {type(model.config)}")
+                    self._append_log(job, f"✅ Model loaded with 8-bit quantization, config protected", db)
+                except Exception as load_error_8bit:
+                    error_str_8bit = str(load_error_8bit)
+                    if "'dict' object has no attribute 'model_type'" in error_str_8bit or ("model_type" in error_str_8bit.lower() and "dict" in error_str_8bit.lower()):
+                        # Even 8-bit failed - try without quantization
+                        self._append_log(job, f"⚠️ 8-bit quantization also failed, trying without quantization...", db)
+                        try:
+                            # Load model without quantization
+                            model = AutoModelForCausalLM.from_pretrained(
+                                model_path,
+                                device_map="auto",
+                                trust_remote_code=True,
+                            )
+                            # Protect config immediately
+                            self._protect_model_config(model, config)
+                            if isinstance(model.config, dict) or not hasattr(model.config, 'model_type'):
+                                raise RuntimeError(f"Failed to protect config without quantization. Type: {type(model.config)}")
+                            self._append_log(job, f"✅ Model loaded without quantization, config protected (note: model is not quantized)", db)
+                        except Exception as alt_error:
+                            error_msg = f"Failed to load model even without quantization: {str(alt_error)}"
+                            self._append_log(job, f"❌ {error_msg}", db)
+                            raise RuntimeError(error_msg) from alt_error
+                    else:
+                        raise RuntimeError(f"8-bit quantization failed: {error_str_8bit}") from load_error_8bit
+            else:
+                raise RuntimeError(f"Model loading failed: {error_str}") from load_error
+        
+        # Load tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        # Final verification: ensure config is protected and accessible
+        if not hasattr(model, 'config') or isinstance(model.config, dict) or not hasattr(model.config, 'model_type'):
+            error_msg = f"Model config is not properly protected. Cannot proceed with training."
             self._append_log(job, f"❌ {error_msg}", db)
             raise RuntimeError(error_msg)
         
-        # CRITICAL: Verify model.config.model_type is accessible BEFORE prepare_model_for_kbit_training
-        # prepare_model_for_kbit_training will immediately access model.config.model_type
-        try:
-            _ = model.config.model_type
-        except (AttributeError, TypeError) as e:
-            self._append_log(job, f"⚠️ model.config.model_type not accessible: {e}, fixing...", db)
-            # Reload config and force-set it
-            config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-            if isinstance(config, dict):
-                # Read model_type from dict
-                model_type = config.get('model_type')
-                if model_type:
-                    from transformers import CONFIG_MAPPING
-                    config_class = CONFIG_MAPPING.get(model_type)
-                    if config_class:
-                        config = config_class.from_pretrained(model_path, trust_remote_code=True)
-                    else:
-                        raise RuntimeError(f"Unknown model_type: {model_type}")
-                else:
-                    raise RuntimeError("Could not determine model_type from config dict")
-            # Force set config on model
-            model.config = config
-            # Verify it's set correctly
-            if not hasattr(model.config, 'model_type'):
-                raise RuntimeError(f"Failed to set model.config - model_type still not accessible. Config type: {type(model.config)}")
+        self._append_log(job, "✅ Model and tokenizer loaded successfully", db)
         
-        self._append_log(job, "✅ Model loaded successfully", db)
-        
-        # CRITICAL: Ensure model.config is a proper Config object BEFORE prepare_model_for_kbit_training
-        # prepare_model_for_kbit_training will immediately access model.config.model_type internally
-        # If it's a dict, it will fail. We must ensure it's a Config object.
-        if isinstance(model.config, dict) or not hasattr(model.config, 'model_type'):
-            self._append_log(job, f"⚠️ model.config is dict or missing model_type, fixing before prepare_model_for_kbit_training...", db)
-            # Get model_type from project or reload config
-            model_type = None
-            if hasattr(job, '_project') and hasattr(job._project, 'model_type') and job._project.model_type:
-                model_type = job._project.model_type
-            else:
-                # Read from config.json
-                config_path = Path(model_path) / "config.json"
-                if config_path.exists():
-                    with open(config_path, 'r') as f:
-                        config_dict = json_module.load(f)
-                        model_type = config_dict.get('model_type')
-            
-            if model_type:
-                # Use direct access instead of .get() as CONFIG_MAPPING may not support .get() properly
-                config_class = CONFIG_MAPPING[model_type] if model_type in CONFIG_MAPPING else None
-                if config_class:
-                    config = config_class.from_pretrained(model_path, trust_remote_code=True)
-                else:
-                    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True, _from_auto=True)
-            else:
-                config = AutoConfig.from_pretrained(model_path, trust_remote_code=True, _from_auto=True)
-            
-            # Force set config - this MUST be a Config object, not dict
-            model.config = config
-            # Verify it's set correctly
-            if isinstance(model.config, dict) or not hasattr(model.config, 'model_type'):
-                raise RuntimeError(f"Failed to set model.config - still dict or missing model_type. Config type: {type(model.config)}")
-            self._append_log(job, f"✅ model.config fixed: {type(model.config).__name__} with model_type={model.config.model_type}", db)
-        
-        # Prepare model for training (now safe - model.config.model_type is accessible)
+        # Prepare model for training (config is protected, so this should work)
         # prepare_model_for_kbit_training accesses model.config.model_type internally
+        # Our config protection should handle any dict conversion attempts
         try:
-            # Double-check before calling
+            # Verify config is accessible before calling
             if not hasattr(model.config, 'model_type'):
                 raise RuntimeError(f"model.config.model_type not accessible before prepare_model_for_kbit_training. Config type: {type(model.config)}")
             
             model = prepare_model_for_kbit_training(model)
             
-            # Verify config is still valid after prepare_model_for_kbit_training
+            # Verify config is still protected after prepare_model_for_kbit_training
+            # The protection should have prevented any dict conversion
             if isinstance(model.config, dict) or not hasattr(model.config, 'model_type'):
-                self._append_log(job, f"⚠️ prepare_model_for_kbit_training changed config to dict, fixing...", db)
-                # Re-fix config
-                model_type = model.config.get('model_type') if isinstance(model.config, dict) else (hasattr(job, '_project') and job._project.model_type) or None
-                if not model_type:
-                    config_path = Path(model_path) / "config.json"
-                    if config_path.exists():
-                        with open(config_path, 'r') as f:
-                            model_type = json_module.load(f).get('model_type')
-                
-                if model_type:
-                    # Use direct access instead of .get() as CONFIG_MAPPING may not support .get() properly
-                    config_class = CONFIG_MAPPING[model_type] if model_type in CONFIG_MAPPING else None
-                    if config_class:
-                        config = config_class.from_pretrained(model_path, trust_remote_code=True)
-                    else:
-                        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True, _from_auto=True)
-                else:
-                    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True, _from_auto=True)
-                
-                model.config = config
+                self._append_log(job, f"⚠️ prepare_model_for_kbit_training changed config, re-protecting...", db)
+                # Re-protect config (shouldn't be needed, but just in case)
+                self._protect_model_config(model, config)
                 if isinstance(model.config, dict) or not hasattr(model.config, 'model_type'):
-                    raise RuntimeError(f"Failed to fix config after prepare_model_for_kbit_training. Type: {type(model.config)}")
-                self._append_log(job, f"✅ Config fixed after prepare_model_for_kbit_training", db)
+                    raise RuntimeError(f"Failed to protect config after prepare_model_for_kbit_training. Type: {type(model.config)}")
+                self._append_log(job, f"✅ Config re-protected after prepare_model_for_kbit_training", db)
         except (AttributeError, TypeError) as e:
             error_str = str(e)
             if "'dict' object has no attribute 'model_type'" in error_str or "model_type" in error_str.lower():
                 self._append_log(job, f"❌ prepare_model_for_kbit_training failed: {error_str[:200]}", db)
-                # This is the final attempt - if this fails, we can't proceed
-                raise RuntimeError(f"Failed to prepare model for kbit training: model.config is a dict. This indicates a transformers library issue with quantization. Error: {error_str}")
+                # Re-protect config and try again
+                self._protect_model_config(model, config)
+                try:
+                    model = prepare_model_for_kbit_training(model)
+                    self._append_log(job, f"✅ prepare_model_for_kbit_training succeeded after re-protection", db)
+                except Exception as retry_error:
+                    raise RuntimeError(f"Failed to prepare model for kbit training even with config protection. This indicates a transformers library issue with quantization. Error: {error_str}") from retry_error
             else:
                 raise
         
